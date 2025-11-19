@@ -911,7 +911,7 @@ class PlantIsce3Sensor():
             if orbit_file is not None:
                 radar_grid = self.get_radar_grid()
                 orbit = load_orbit_from_xml(orbit_file,
-                                            radar_grid.ref_epoch())
+                                            radar_grid.ref_epoch)
                 return orbit
 
             return self.nisar_product_obj.getOrbit()
@@ -1055,7 +1055,7 @@ class PlantIsce3Sensor():
 
         for orbit_file in all_orbit_files:
 
-            orbit = load_orbit_from_xml(orbit_file, radar_grid.ref_epoch())
+            orbit = load_orbit_from_xml(orbit_file, radar_grid.ref_epoch)
 
             orbit_start = datetime.datetime.fromisoformat(
                 orbit.start_datetime.isoformat_usec())

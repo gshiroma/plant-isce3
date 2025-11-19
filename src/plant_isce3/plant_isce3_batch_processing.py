@@ -14,6 +14,8 @@ import boto3
 import glob
 import pickle
 
+from plant_isce3.readers.product import open_product
+
 res_deg_dict = {'A': 1.0 / 3600,
                 'B': 1.0 / 3600}
 
@@ -60,6 +62,11 @@ def get_parser():
                         dest='filename_must_not_include',
                         help=('List of strings that the input products should'
                               ' not include'))
+
+    parser.add_argument('--must-be-quad-pol',
+                        action='store_true',
+                        dest='must_be_quad_pol',
+                        help='Require products to be quad-polarized')
 
     parser.add_argument('--step-1-load-pickle-files',
                         action='store_true',
@@ -673,9 +680,11 @@ class PlantIsce3BatchProcessing(plant_isce3.PlantIsce3Script):
 
                 h5_obj = h5py.File(s3_product_path, driver='ros3',
                                    **kwargs)
+                self.nisar_product_obj = open_product(s3_product_path)
 
             else:
                 h5_obj = h5py.File(os.join(path, f), swmr=True)
+                self.nisar_product_obj = open_product(os.path.join(path, f))
 
             current_file_product_type = get_product_type(h5_obj)
             current_product_level = get_product_level(h5_obj)
@@ -730,26 +739,23 @@ class PlantIsce3BatchProcessing(plant_isce3.PlantIsce3Script):
 
             list_of_frequencies = [freq.decode()
                                    for freq in list_of_frequencies_orig]
-            list_of_frequencies_dict = {}
 
-            for frequency in list_of_frequencies:
-
-                if current_product_level == 'L1':
-                    h5_path = (f'/science/LSAR/{current_file_product_type}/'
-                               f'swaths/frequency{frequency}/'
-                               'listOfPolarizations')
-                else:
-                    h5_path = (f'/science/LSAR/{current_file_product_type}/'
-                               f'grids/frequency{frequency}/'
-                               'listOfPolarizations')
-
-                if h5_path not in h5_obj:
+            list_of_frequencies_dict = self.nisar_product_obj.polarizations
+            print('list_of_frequencies_dict:', list_of_frequencies_dict)
+            if self.must_be_quad_pol:
+                if ('A' in list_of_frequencies_dict.keys() and
+                        set(list_of_frequencies_dict['A']) !=
+                        set(['HH', 'HV', 'VH', 'VV'])):
+                    print('    skipping non quad-pol frequency A:',
+                          list_of_frequencies_dict['A'])
                     continue
-
-                pol_list_orig = h5_obj[h5_path]
-
-                pol_list = [pol.decode() for pol in pol_list_orig]
-                list_of_frequencies_dict[frequency] = pol_list
+                if ('B' in list_of_frequencies_dict.keys() and
+                        set(list_of_frequencies_dict['B']) !=
+                        set(['HH', 'HV', 'VH', 'VV'])):
+                    print('    skipping non quad-pol frequency B:',
+                          list_of_frequencies_dict['B'])
+                    continue
+                print('    quad-pol check passed')
 
             if current_product_level == 'L2':
                 epsg = str(get_product_epsg(h5_obj, current_file_product_type))

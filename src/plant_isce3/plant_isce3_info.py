@@ -126,12 +126,12 @@ class PlantIsce3Info(plant_isce3.PlantIsce3Script):
         for key, value in burst_id_dict.items():
             print(f'## burst(s) in subswath {key}:', value)
 
-    def verify_geolocation_lut(self, product_type,
-                               h5_obj, lut_group_path, lut_name,
-                               y_coordinates_str, x_coordinates_str,
-                               y0, yf, dy, x0, xf, dx,
-                               coordinate_y_descr,
-                               coordinate_x_descr):
+    def verify_lut_horizontal_extents(self, product_type,
+                                      h5_obj, lut_group_path, lut_name,
+                                      y_coordinates_str, x_coordinates_str,
+                                      y0, yf, dy, x0, xf, dx,
+                                      coordinate_y_descr,
+                                      coordinate_x_descr):
 
         if (f'{lut_group_path}/{y_coordinates_str}' not in
                 h5_obj[lut_group_path]):
@@ -148,19 +148,21 @@ class PlantIsce3Info(plant_isce3.PlantIsce3Script):
 
         lut_y0 = y_coordinates[0]
         lut_yf = y_coordinates[-1]
+        lut_dy = y_coordinates[1] - y_coordinates[0]
 
         lut_x0 = x_coordinates[0]
         lut_xf = x_coordinates[-1]
+        lut_dx = x_coordinates[1] - x_coordinates[0]
 
-        lut_y0_index = (lut_y0 - y0) / dy
-        lut_yf_index = (lut_yf - yf) / dy
-        lut_x0_index = (lut_x0 - x0) / dx
-        lut_xf_index = (lut_xf - xf) / dx
+        lut_y0_index = (lut_y0 - y0) / lut_dy
+        lut_yf_index = (lut_yf - yf) / lut_dy
+        lut_x0_index = (lut_x0 - x0) / lut_dx
+        lut_xf_index = (lut_xf - xf) / lut_dx
 
-        lut_y0_status = '[ OK ]' if dy / \
-            abs(dy) * lut_y0_index < 0 else '[FAIL]'
-        lut_yf_status = '[ OK ]' if dy / \
-            abs(dy) * lut_yf_index > 0 else '[FAIL]'
+        lut_y0_status = '[ OK ]' if lut_dy / \
+            abs(lut_dy) * lut_y0_index < 0 else '[FAIL]'
+        lut_yf_status = '[ OK ]' if lut_dy / \
+            abs(lut_dy) * lut_yf_index > 0 else '[FAIL]'
 
         lut_x0_status = '[ OK ]' if lut_x0_index < 0 else '[FAIL]'
         lut_xf_status = '[ OK ]' if lut_xf_index > 0 else '[FAIL]'
@@ -172,21 +174,21 @@ class PlantIsce3Info(plant_isce3.PlantIsce3Script):
             if (product_type != 'RSLC' or
                     'noiseEquivalentBackscatter' not in lut_group_path):
                 print(f'{lut_y0_status} start {coordinate_y_descr}'
-                      f' (lut_y0 - y0) / dy = lut_y0_index => '
-                      f' ({lut_y0} - {y0}) / {dy} ='
+                      f' (lut_y0 - y0) / lut_dy = lut_y0_index => '
+                      f' ({lut_y0} - {y0}) / {lut_dy} ='
                       f' {lut_y0_index}')
                 print(f'{lut_yf_status} end {coordinate_y_descr}'
-                      f' (lut_yf - yf) / dy = lut_yf_index => '
-                      f' ({lut_yf} - {yf}) / {dy} ='
+                      f' (lut_yf - yf) / lut_dy = lut_yf_index => '
+                      f' ({lut_yf} - {yf}) / {lut_dy} ='
                       f' {lut_yf_index}')
 
             print(f'{lut_x0_status} start {coordinate_x_descr}'
-                  f' (lut_x0 - x0) / dy = lut_x0_index => '
-                  f' ({lut_x0} - {x0}) / {dx} ='
+                  f' (lut_x0 - x0) / lut_dx = lut_x0_index => '
+                  f' ({lut_x0} - {x0}) / {lut_dx} ='
                   f' {lut_x0_index}')
             print(f'{lut_xf_status} end {coordinate_x_descr}'
-                  f' (lut_xf - xf) / dy = lut_xf_index => '
-                  f' ({lut_xf} - {xf}) / {dx} ='
+                  f' (lut_xf - xf) / lut_dx = lut_xf_index => '
+                  f' ({lut_xf} - {xf}) / {lut_dx} ='
                   f' {lut_xf_index}')
 
     def _print_nisar_product_info(self):
@@ -361,7 +363,7 @@ class PlantIsce3Info(plant_isce3.PlantIsce3Script):
 
                         for lut_group_path, lut_name in lut_list:
 
-                            self.verify_geolocation_lut(
+                            self.verify_lut_horizontal_extents(
                                 nisar_product_obj.productType,
                                 h5_obj, lut_group_path, lut_name,
                                 y_coordinates_str, x_coordinates_str,

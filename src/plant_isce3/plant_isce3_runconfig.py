@@ -53,14 +53,20 @@ def get_parser():
                         dest='flag_gslc',
                         help='Generated geocoded SLC runconfig')
 
-    parser.add_argument(
-        '--rtc-min-value-db',
-        dest='rtc_min_value_db',
-        default=-30,
-        type=float,
-        help=(
-            'Minimum RTC area normalization factor (AFN) in'
-            ' dB. "nan" to disable it (default: %(default)s)'))
+    parser.add_argument('--rtc-min-value-db',
+                        dest='rtc_min_value_db',
+                        default=-30,
+                        type=float,
+                        help=('Minimum RTC area normalization factor (AFN) in'
+                              ' dB. "nan" to disable it'
+                              ' (default: %(default)s)'))
+
+    parser.add_argument('--full-covariance',
+                        '--fullcovariance',
+                        dest='full_covariance',
+                        action='store_true',
+                        help='Include off-diagonal terms in the covariance'
+                        ' matrix.')
 
     parser.add_argument('--mantissa-nbits',
                         '--mantissa-n-bits',
@@ -443,12 +449,17 @@ class PlantIsce3Runconfig(plant_isce3.PlantIsce3Script):
 
         print('        processing:', **kwargs)
 
-        if (workflow_name_upper == 'GCOV' and
-                self.rtc_min_value_db is not None and
-                plant.isvalid(self.rtc_min_value_db)):
-            print('            rtc:', **kwargs)
-            print(f'                rtc_min_value_db: {self.rtc_min_value_db}',
-                  **kwargs)
+        if workflow_name_upper == 'GCOV':
+            if (self.rtc_min_value_db is not None and
+                    plant.isvalid(self.rtc_min_value_db)):
+                print('            rtc:', **kwargs)
+                print('                rtc_min_value_db:'
+                      f' {self.rtc_min_value_db}',
+                      **kwargs)
+
+            if self.full_covariance:
+                print('            input_subset:', **kwargs)
+                print('                fullcovariance: true', **kwargs)
 
         print('            geocode:', **kwargs)
 
