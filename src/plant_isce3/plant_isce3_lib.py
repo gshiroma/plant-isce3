@@ -2231,6 +2231,7 @@ def execute(command,
         sink = plant.PlantIndent()
 
     with sink:
+
         if verbose:
             arguments = plant.get_command_line_from_argv(argv)
             command_line = (f'{module_name}.py {arguments}')
@@ -2331,7 +2332,7 @@ class ModuleWrapper(object):
             return
 
         flag_mute = kwargs.get('flag_mute', None)
-        verbose = kwargs.get('verbose', None) and not (flag_mute is True)
+        verbose = kwargs.get('verbose', True) and not (flag_mute is True)
         if self._ref is not None:
 
             ret = self._ref.execute(self._command, verbose=verbose)
