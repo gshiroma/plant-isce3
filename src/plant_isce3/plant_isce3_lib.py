@@ -1240,6 +1240,26 @@ class PlantIsce3Script(plant.PlantScript):
             if os.path.isfile(envi_header):
                 os.remove(envi_header)
 
+    def get_grids_ref(self, layer_name, nisar_product_obj, image_obj,
+                      valid_products=['GCOV', 'GSLC', 'STATIC']):
+        if image_obj is not None:
+            return image_obj
+        if nisar_product_obj.productType not in valid_products:
+            error_msg = (f'ERROR cannot save layer "{layer_name}" for'
+                         ' product type'
+                         f' "{nisar_product_obj.productType}".')
+            print(error_msg)
+            raise ValueError(error_msg)
+
+        if nisar_product_obj.productType == 'STATIC':
+            grid_path = (f'{nisar_product_obj.GridPath}/{layer_name}')
+        else:
+            grid_path = (f'{nisar_product_obj.GridPath}'
+                         f'/frequency{self.frequency}/{layer_name}')
+        image_ref = f'NETCDF:{self.input_file}:{grid_path}'
+
+        return image_ref
+
     def update_geogrid(self, radar_grid, dem_raster=None, geo=None,
                        nisar_product_obj=None, orbit=None):
 
@@ -1762,7 +1782,7 @@ class PlantIsce3Script(plant.PlantScript):
 
         if nlooks_y > 1 or nlooks_x > 1:
 
-            image_obj = self.read_image(input_raster)
+            image_obj = plant.read_image(input_raster)
 
             self.print('multilooking input file')
             dtype_str = plant.get_dtype_name(image_obj.dtype)

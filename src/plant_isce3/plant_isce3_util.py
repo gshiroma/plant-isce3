@@ -2,6 +2,7 @@
 
 import os
 import shutil
+import sys
 
 import numpy as np
 import plant
@@ -239,6 +240,32 @@ def get_parser():
                         dest='transform_square',
                         help='Square of input')
 
+    parser.add_argument('--separate-pol',
+                        '--sep-pol',
+                        '--separate-pols',
+                        '--sep-pols',
+                        '--separate-polarizations',
+                        '--sep-polarizations',
+                        dest='separate_pol',
+                        action='store_true',
+                        help='Handle polarimetric channels individually,'
+                        ' with one output file for each'
+                        ' available polarization. Requires the output'
+                        ' directory argument: "--output-dir" or "--od"')
+
+    parser.add_argument('--separate-freq',
+                        '--sep-freq',
+                        '--separate-freqs',
+                        '--sep-freqs',
+                        '--separate-frequencies',
+                        '--sep-frequencies',
+                        dest='separate_freq',
+                        action='store_true',
+                        help='Handle frequencies individually,'
+                        ' with one output file for each'
+                        ' available frequencies. Requires the output'
+                        ' directory argument: "--output-dir" or "--od"')
+
     return parser
 
 
@@ -273,6 +300,140 @@ class PlantIsce3Util(plant_isce3.PlantIsce3Script):
     def run(self):
 
         self.frequency_orig = self.frequency
+
+        if not self.output_ext:
+            self.output_ext = '.tif'
+
+        if (self.separate_pol and not self.data_file and
+                not self.masked_data_file):
+            print('ERROR the option --separate-pol requires the option'
+                  ' --data or --masked-data to be set')
+            sys.exit(1)
+            return
+
+        if (self.separate_freq and
+                (self.copy_pol or self.move_pol or
+                 self.swap_quad_pol or self.remove_pol or
+                 self.runconfig_file or
+                 self.orbit_kml_file or
+                 (self.output_file and self.output_file.endswith('.h5')))):
+            print('ERROR the option --separate-freq is'
+                  ' not compatible with the options --copy-pol, --move-pol,'
+                  ' --swap-pol, --remove-pol, --runconfig-file,'
+                  ' --orbit-kml or with output files in h5 format')
+            sys.exit(1)
+            return
+
+        if self.separate_pol or self.separate_freq:
+
+            if not self.output_dir:
+                self.output_dir = '.'
+
+            plant_product_obj = self.load_product()
+            if (plant_product_obj.sensor_name != 'NISAR'):
+                self.print('ERROR the options --separate-pol and'
+                           ' --separate-freq are only available for'
+                           ' NISAR products')
+                sys.exit(1)
+                return
+
+            freq_pols = plant_product_obj.nisar_product_obj.polarizations
+
+            frequency_orig = self.frequency
+            band_orig = self.band
+
+            output_file_orig = self.output_file
+
+            if self.separate_freq:
+                freqs_iterator = freq_pols.items()
+            else:
+                frequency = plant_product_obj.get_frequency_str()
+                pols_iterator = freq_pols[frequency]
+                freqs_iterator = [[frequency, pols_iterator]]
+
+            if output_file_orig:
+                self.print(f'## output file template: {output_file_orig}')
+
+            if not self.output_ext.startswith('.'):
+                self.output_ext = f'.{self.output_ext}'
+
+            ret_list = []
+            for freq, pols in freqs_iterator:
+                if (frequency_orig is not None and
+                        frequency_orig != freq):
+                    continue
+
+                if not self.separate_pol:
+
+                    if output_file_orig:
+                        self.output_file = output_file_orig
+                        self.output_file = self.output_file.replace(
+                            '{frequency}', self.frequency)
+                        self.output_file = self.output_file.replace(
+                            '{freq}', self.frequency)
+                    else:
+                        self.output_file = os.path.join(
+                            self.output_dir,
+                            f'data_freq_{freq}{self.output_ext}')
+
+                    self.frequency = freq
+
+                    if (self.output_skip_if_existent and
+                            plant.isfile(self.output_file)):
+                        print('INFO output file %s already exist, '
+                              'skipping execution..' % self.output_file)
+                        continue
+
+                    ret = self.run_util()
+                    continue
+
+                for band, pol in enumerate(pols):
+                    if (band_orig is not None and
+                            band_orig != band):
+                        continue
+
+                    if band_orig is not None and band != band_orig:
+                        continue
+
+                    self.frequency = freq
+                    self.band = band
+
+                    if output_file_orig:
+                        self.output_file = output_file_orig
+                        self.output_file = self.output_file.replace(
+                            '{frequency}', self.frequency)
+                        self.output_file = self.output_file.replace(
+                            '{freq}', self.frequency)
+                        self.output_file = self.output_file.replace(
+                            '{polarization}', pol)
+                        self.output_file = self.output_file.replace(
+                            '{pol}', pol)
+                    else:
+                        self.output_file = os.path.join(
+                            self.output_dir,
+                            f'data_freq_{freq}_{pol}{self.output_ext}')
+
+                    if (self.output_skip_if_existent and
+                            plant.isfile(self.output_file)):
+                        print('INFO output file %s already exist, '
+                              'skipping execution..' % self.output_file)
+                        continue
+                    ret = self.run_util()
+
+                ret_list.append(ret)
+            return ret_list
+        elif (not self.output_file and
+              (self.output_dir or self.output_ext) and not
+                (self.flag_all_layers or self.flag_all_secondary_layers)):
+            self.parser.print_usage()
+            self.print('ERROR this script only accepts --output-dir or'
+                       ' --output-ext in --separate-pol or'
+                       ' --separate-freq modes')
+            sys.exit(1)
+            return
+        return self.run_util()
+
+    def run_util(self):
 
         ret = self.overwrite_file_check(self.output_file)
         if not ret:
@@ -350,7 +511,7 @@ class PlantIsce3Util(plant_isce3.PlantIsce3Script):
                 self.nlooks_az, self.nlooks_rg = \
                     self.get_nlooks(self.frequency)
 
-                suffix = f'_freq_{self.frequency.lower()}'
+                suffix = f'_freq_{self.frequency.upper()}'
 
                 return self.save_all_layers(nisar_product_obj,
                                             plant_product_obj,
@@ -360,7 +521,7 @@ class PlantIsce3Util(plant_isce3.PlantIsce3Script):
                 frequencies = nisar_product_obj.polarizations.keys()
                 for freq in frequencies:
                     self.print(f'## processing frequency {freq}')
-                    suffix = f'_freq_{freq.lower()}'
+                    suffix = f'_freq_{freq.upper()}'
                     self.frequency = freq
 
                     self.nlooks_az, self.nlooks_rg = self.get_nlooks(freq)
@@ -827,6 +988,9 @@ class PlantIsce3Util(plant_isce3.PlantIsce3Script):
         else:
             ext = 'tif'
 
+        if ext.startswith('.'):
+            ext = ext[1:]
+
         self.output_file = os.path.join(self.output_dir,
                                         f'{prefix}mask{suffix}.{ext}')
 
@@ -1059,8 +1223,8 @@ class PlantIsce3Util(plant_isce3.PlantIsce3Script):
 
         if (not self.transform_square and
                 nisar_product_obj.productType == 'GSLC' and
-                (self.nlooks_az is not None and self.nlooks_az != 1) or
-                (self.nlooks_rg is not None and self.nlooks_rg != 1)):
+                ((self.nlooks_az is not None and self.nlooks_az != 1) or
+                 (self.nlooks_rg is not None and self.nlooks_rg != 1))):
             self.print('WARNING multilooking is enabled and'
                        ' GSLC samples are complex.'
                        ' Converting samples to power/intensity'
@@ -1071,12 +1235,19 @@ class PlantIsce3Util(plant_isce3.PlantIsce3Script):
             input_raster=None,
             plant_product_obj=plant_product_obj)
 
+        if (masked and
+                plant_product_obj.nisar_product_obj.productType not
+                in ['GCOV', 'GSLC']):
+            self.print('WARNING the option --masked-data is only available for'
+                       ' GCOV and GSLC products, skipping mask application..')
+            masked = False
+
         if masked:
             image_ref = self.get_grids_ref(
                 'mask', nisar_product_obj, image_obj=None,
                 valid_products=['GCOV', 'GSLC'])
 
-            image_obj = self.read_image(image_ref)
+            image_obj = self.read_image(image_ref, band=0)
 
             mask_array_obj = plant.filter_data(image_obj,
                                                nlooks=[self.nlooks_az,
@@ -1106,7 +1277,7 @@ class PlantIsce3Util(plant_isce3.PlantIsce3Script):
             'mask', nisar_product_obj, image_obj,
             valid_products=['GCOV', 'GSLC'])
 
-        image_obj = self.read_image(image_ref)
+        image_obj = self.read_image(image_ref, band=0)
 
         mask_array_obj = plant.filter_data(image_obj,
                                            nlooks=[self.nlooks_az,
@@ -1122,26 +1293,6 @@ class PlantIsce3Util(plant_isce3.PlantIsce3Script):
         self.save_image(mask_array_obj, output_file=self.output_file,
                         out_null=255, ctable=mask_ctable)
         plant.append_output_file(self.output_file)
-
-    def get_grids_ref(self, layer_name, nisar_product_obj, image_obj,
-                      valid_products=['GCOV', 'GSLC', 'STATIC']):
-        if image_obj is not None:
-            return image_obj
-        if nisar_product_obj.productType not in valid_products:
-            error_msg = (f'ERROR cannot save layer "{layer_name}" for'
-                         ' product type'
-                         f' "{nisar_product_obj.productType}".')
-            print(error_msg)
-            raise ValueError(error_msg)
-
-        if nisar_product_obj.productType == 'STATIC':
-            grid_path = (f'{nisar_product_obj.GridPath}/{layer_name}')
-        else:
-            grid_path = (f'{nisar_product_obj.GridPath}'
-                         f'/frequency{self.frequency}/{layer_name}')
-        image_ref = f'NETCDF:{self.input_file}:{grid_path}'
-
-        return image_ref
 
     def save_nisar_layer(self, layer_name, nisar_product_obj=None,
 
@@ -1590,8 +1741,8 @@ def get_datetime_from_isoformat(ref_epoch):
 def main(argv=None):
     with plant.PlantLogger():
         parser = get_parser()
-        self_obj = PlantIsce3Util(parser, argv)
-        ret = self_obj.run()
+        with PlantIsce3Util(parser, argv) as self_obj:
+            ret = self_obj.run()
         return ret
 
 

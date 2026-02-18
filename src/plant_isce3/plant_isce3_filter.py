@@ -83,6 +83,13 @@ def get_parser():
                         ' available frequencies. Requires the output'
                         ' directory argument: "--output-dir" or "--od"')
 
+    parser.add_argument('--masked-data',
+                        '--masked-images',
+                        dest='masked_data_file',
+                        action='store_true',
+                        help=("Extract product's imagery and apply valid data"
+                              " mask"))
+
     return parser
 
 
@@ -240,8 +247,12 @@ class PlantIsce3Filter(plant_isce3.PlantIsce3Script):
             pols = plant_product_obj.nisar_product_obj.polarizations[
                 self.frequency]
             if self.band is not None:
+                if not plant.is_sequence(self.band):
+                    band_list = [self.band]
+                else:
+                    band_list = self.band
 
-                pols = [pols[b] for b in self.band]
+                pols = [pols[b] for b in band_list]
 
         self.nlooks_y = nlooks_y
         self.nlooks_x = nlooks_x
@@ -284,6 +295,34 @@ class PlantIsce3Filter(plant_isce3.PlantIsce3Script):
                                     metadata_dict=metadata_dict,
                                     block_nlines=self.block_nlines)
 
+        if (self.masked_data_file and
+                plant_product_obj.nisar_product_obj.productType not
+                in ['GCOV', 'GSLC']):
+            self.print('WARNING the option --masked-data is only available for'
+                       ' GCOV and GSLC products, skipping mask application..')
+
+        elif self.masked_data_file:
+            image_ref = self.get_grids_ref(
+                'mask', plant_product_obj.nisar_product_obj, image_obj=None,
+                valid_products=['GCOV', 'GSLC'])
+
+            image_obj = self.read_image(image_ref, band=0)
+
+            mask_array_obj = plant.filter_data(image_obj,
+                                               nlooks=[self.nlooks_az,
+                                                       self.nlooks_rg])
+            del image_obj
+
+            mask_array_obj.image = np.asarray(mask_array_obj.image,
+                                              dtype=np.uint8)
+
+            valid = ((mask_array_obj.image > 0) & (mask_array_obj.image < 10))
+
+            image_obj = plant.util(self.output_file, input_mask=valid)
+
+            self.save_image(image_obj, output_file=self.output_file,
+                            force=True)
+
         ret_dict = {}
         ret_dict['output_file'] = self.output_file
         plant.append_output_file(self.output_file)
@@ -303,8 +342,8 @@ class PlantIsce3Filter(plant_isce3.PlantIsce3Script):
 def main(argv=None):
     with plant.PlantLogger():
         parser = get_parser()
-        self_obj = PlantIsce3Filter(parser, argv)
-        ret = self_obj.run()
+        with PlantIsce3Filter(parser, argv) as self_obj:
+            ret = self_obj.run()
         return ret
 
 
