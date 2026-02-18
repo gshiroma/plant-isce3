@@ -526,8 +526,8 @@ def lat_lon_to_projected(north, east, epsg):
 def main(argv=None):
     with plant.PlantLogger():
         parser = get_parser()
-        self_obj = PlantIsce3Info(parser, argv)
-        ret = self_obj.run()
+        with PlantIsce3Info(parser, argv) as self_obj:
+            ret = self_obj.run()
         return ret
 
 

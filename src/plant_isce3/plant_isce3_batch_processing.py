@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 
 import os
-import sys
+
+from zipfile import ZipFile
 import plant
 import plant_isce3
 
@@ -109,13 +110,25 @@ def get_parser():
     parser.add_argument('--step-1-download-png',
                         '--step-1-download-browse',
                         action='store_true',
-                        dest='step_1_download_browse',
+                        dest='step_1_download_browse_png',
                         help='Download browse images (PNG files)')
 
     parser.add_argument('--step-1-download-kml',
                         action='store_true',
                         dest='step_1_download_kml',
                         help='Download browse KML files')
+
+    parser.add_argument('--output-mosaic-kmz-from-all-browse-files',
+
+                        type=str,
+                        dest='step_1_mosaic_kmz',
+                        help=('Name of the mosaic KMZ file from all browse'
+                              ' files'))
+    parser.add_argument('--step-1-delete-files-after-mosaic',
+                        action='store_true',
+                        dest='step_1_delete_files_after_mosaic',
+                        help=('Delete browse files after generating mosaic'
+                              ' KMZ'))
 
     parser.add_argument('--step-2-gcov-runconfig',
                         '--step-2-generate-gcov-runconfig',
@@ -450,9 +463,10 @@ class PlantIsce3BatchProcessing(plant_isce3.PlantIsce3Script):
                 print('frequency_epsg_dict:', frequency_epsg_dict)
 
         else:
-            frequency_epsg_dict = self.step_1_2_processing_native_coordinates(
-                flag_s3_bucket, bucket_name, s3_prefix, kwargs_color,
-                tiles_map_by_epsg, bbox_by_epsg)
+            frequency_epsg_dict, mosaic_kmz_file_list = \
+                self.step_1_2_processing_native_coordinates(
+                    flag_s3_bucket, bucket_name, s3_prefix, kwargs_color,
+                    tiles_map_by_epsg, bbox_by_epsg)
 
         if self.step_1_save_pickle_files:
             os.makedirs('pickle_files', exist_ok=True)
@@ -467,6 +481,57 @@ class PlantIsce3BatchProcessing(plant_isce3.PlantIsce3Script):
             with open(bbox_by_epsg_pickle_file, 'wb') as pickle_file:
                 pickle.dump(bbox_by_epsg, pickle_file)
             print('file saved:', bbox_by_epsg_pickle_file)
+
+        if self.step_1_mosaic_kmz and len(mosaic_kmz_file_list) > 0:
+            print('    Step 1: Mosaic KMZ')
+            mosaic_doc_kml_file = f'{self.step_1_directory}/doc.kml'
+
+            if plant.isfile(mosaic_doc_kml_file):
+                update = self.overwrite_file_check(mosaic_doc_kml_file)
+            else:
+                update = True
+
+            if update:
+                with open(mosaic_doc_kml_file, 'w') as f:
+                    f.write('<?xml version="1.0" encoding="UTF-8"?>\n')
+                    f.write('<kml xmlns="http://www.opengis.net/kml/2.2">\n')
+                    f.write('  <Document>\n')
+                    for filename_kml in mosaic_kmz_file_list:
+                        if not filename_kml.endswith('.kml'):
+                            continue
+                        basename_kml = os.path.basename(filename_kml)
+                        kml_zip_path = os.path.join('files', basename_kml)
+                        basename = basename_kml.replace('.kml', '')
+
+                        f.write('    <NetworkLink>\n')
+                        f.write(f'      <name>{basename}</name>\n')
+                        f.write('      <Link>\n')
+                        f.write(f'        <href>{kml_zip_path}</href>\n')
+                        f.write('      </Link>\n')
+                        f.write('    </NetworkLink>\n')
+                    f.write('  </Document>\n')
+                    f.write('</kml>\n')
+
+                if plant.isfile(self.step_1_mosaic_kmz):
+                    update = self.overwrite_file_check(self.step_1_mosaic_kmz)
+                else:
+                    update = True
+
+                if update:
+                    with ZipFile(self.step_1_mosaic_kmz, 'w') as myzip:
+                        for filename in mosaic_kmz_file_list:
+                            basename = os.path.basename(filename)
+                            myzip.write(filename,
+                                        os.path.join('files', basename))
+                        myzip.write(mosaic_doc_kml_file, 'doc.kml')
+                    print(f'## file saved: {self.step_1_mosaic_kmz}')
+
+        if (self.step_1_delete_files_after_mosaic and
+                len(mosaic_kmz_file_list) > 0):
+            print('    Step 1: Deleting browse files')
+            for filename in mosaic_kmz_file_list:
+                os.remove(filename)
+                print(f'## file deleted: {filename}')
 
         print('## Processing steps 3-5')
 
@@ -620,6 +685,8 @@ class PlantIsce3BatchProcessing(plant_isce3.PlantIsce3Script):
         frequency_epsg_dict = {'A': {},
                                'B': {}}
 
+        mosaic_kmz_file_list = []
+
         if flag_s3_bucket:
             creds = plant_isce3.load_aws_credentials('saml-pub')
 
@@ -640,8 +707,7 @@ class PlantIsce3BatchProcessing(plant_isce3.PlantIsce3Script):
             else:
                 path, f = os.path.split(objects.key)
 
-            if (not f.endswith('.h5') and not f.endswith('.png') and
-                    not f.endswith('.kml')) or 'STATS' in f:
+            if not f.endswith('.h5') or 'STATS' in f:
                 continue
 
             if (self.filename_must_include is not None and
@@ -655,6 +721,7 @@ class PlantIsce3BatchProcessing(plant_isce3.PlantIsce3Script):
                 else:
 
                     continue
+
             if (self.filename_must_include_all is not None and
                     len(self.filename_must_include_all) > 0):
                 flag_all_found = True
@@ -696,50 +763,6 @@ class PlantIsce3BatchProcessing(plant_isce3.PlantIsce3Script):
                     basename = path_splitted[-2]
             print('***    original_basename:', original_basename)
             print('***    basename:', basename)
-            png_file = os.path.join(self.step_1_directory,
-                                    f'{basename}_BROWSE.png')
-
-            if (self.step_1_download_browse and f.endswith('.png') and
-                    not os.path.isfile(png_file)):
-
-                os.makedirs(os.path.dirname(downloaded_file),
-                            exist_ok=True)
-                print('    Step 1: Downloading browse file (PNG):', f)
-                try:
-                    my_bucket.download_file(objects.key, f)
-                except BaseException:
-                    print('        there was an error downloading file:', f)
-                    continue
-                os.rename(f, png_file)
-                continue
-            elif f.endswith('.png'):
-                print('        Browse image already downloaded')
-                continue
-
-            kml_file = os.path.join(self.step_1_directory,
-                                    f'{basename}_BROWSE.kml')
-
-            if (self.step_1_download_kml and f.endswith('.kml') and
-                    not os.path.isfile(kml_file)):
-
-                os.makedirs(os.path.dirname(downloaded_file),
-                            exist_ok=True)
-                print('    Step 1: Downloading browse file:', f)
-                try:
-                    my_bucket.download_file(objects.key, f)
-
-                except BaseException:
-                    print('        there was an error downloading file:', f)
-                    continue
-                substitute_in_file(
-                    f, kml_file, [f'{original_basename}.png',
-                                  'overlay image'],
-                    [f'{basename}_BROWSE.png', basename])
-                os.remove(f)
-                continue
-            elif f.endswith('.kml'):
-                print('        KML image already downloaded')
-                continue
 
             print(f'## {i} - Product {product_count}: {basename}')
 
@@ -759,6 +782,8 @@ class PlantIsce3BatchProcessing(plant_isce3.PlantIsce3Script):
 
             current_file_product_type = get_product_type(h5_obj)
             current_product_level = get_product_level(h5_obj)
+            orbit_pass_direction = get_orbit_pass_direction(h5_obj)
+
             if self.product_type is not None:
                 if self.product_type != current_file_product_type:
                     continue
@@ -767,10 +792,14 @@ class PlantIsce3BatchProcessing(plant_isce3.PlantIsce3Script):
             if current_file_product_type == 'GSLC':
                 kwargs_product_data_to_backscatter['square'] = True
 
-            list_of_frequencies_orig = \
-                h5_obj['/science/LSAR/identification/listOfFrequencies']
             bounding_polygon = h5_obj['/science/LSAR/identification/'
                                       'boundingPolygon'][()].decode()
+
+            product_polygon = ogr.CreateGeometryFromWkt(bounding_polygon)
+            min_lon, max_lon, min_lat, max_lat = \
+                product_polygon.GetEnvelope()
+            center_lon = (min_lon + max_lon) / 2
+            center_lat = (min_lat + max_lat) / 2
 
             if self.bbox:
 
@@ -793,10 +822,6 @@ class PlantIsce3BatchProcessing(plant_isce3.PlantIsce3Script):
                 outer_polygon_ogr = ogr.Geometry(ogr.wkbPolygon)
                 outer_polygon_ogr.AddGeometry(outer_ring)
 
-                product_polygon = ogr.CreateGeometryFromWkt(bounding_polygon)
-                min_lon, max_lon, min_lat, max_lat = \
-                    product_polygon.GetEnvelope()
-
                 self.print('product extents:')
                 with plant.PlantIndent():
                     self.print(f'min_lat: {min_lat}')
@@ -807,9 +832,6 @@ class PlantIsce3BatchProcessing(plant_isce3.PlantIsce3Script):
                 if not outer_polygon_ogr.Contains(product_polygon):
                     print('Product is outside bbox')
                     continue
-
-            list_of_frequencies = [freq.decode()
-                                   for freq in list_of_frequencies_orig]
 
             list_of_frequencies_dict = self.nisar_product_obj.polarizations
             print('list_of_frequencies_dict:', list_of_frequencies_dict)
@@ -828,6 +850,97 @@ class PlantIsce3BatchProcessing(plant_isce3.PlantIsce3Script):
                     continue
                 print('    quad-pol check passed')
 
+            product_count += 1
+
+            png_file = os.path.join(self.step_1_directory,
+                                    f'{basename}_BROWSE.png')
+
+            f_png = f.replace('.h5', '.png')
+            png_s3_prefix = os.path.join(path, f_png)
+
+            if (self.step_1_download_browse_png and
+                    not os.path.isfile(png_file)):
+
+                os.makedirs(os.path.dirname(downloaded_file),
+                            exist_ok=True)
+                print('    Step 1: Downloading browse file (PNG):', f_png)
+                try:
+                    my_bucket.download_file(png_s3_prefix, f_png)
+                except BaseException:
+                    print('        there was an error downloading file:',
+                          f_png)
+                    continue
+                if os.path.isfile(f_png):
+                    os.rename(f_png, png_file)
+
+            if os.path.isfile(png_file):
+                mosaic_kmz_file_list.append(png_file)
+
+            f_kml = f.replace('.h5', '.kml')
+            kml_file = os.path.join(self.step_1_directory,
+                                    f'{basename}_BROWSE.kml')
+            kml_s3_prefix = os.path.join(path, f_kml)
+
+            if (self.step_1_download_kml and
+                    not os.path.isfile(kml_file)):
+
+                os.makedirs(os.path.dirname(downloaded_file),
+                            exist_ok=True)
+                print('    Step 1: Downloading browse file (KML):', f_kml)
+                try:
+                    my_bucket.download_file(kml_s3_prefix, f_kml)
+
+                except BaseException:
+                    print('        there was an error downloading file:',
+                          f_kml)
+
+                if os.path.isfile(f_kml):
+
+                    s3_product_path_directory = os.path.join('s3://',
+                                                             bucket_name, path)
+
+                    if orbit_pass_direction == 'Descending':
+                        icon = 'https://earth.google.com/images/kml-icons/track-directional/track-9.png'
+                    elif orbit_pass_direction == 'Ascending':
+                        icon = 'https://earth.google.com/images/kml-icons/track-directional/track-15.png'
+                    else:
+                        raise ValueError('Unrecognized orbit pass direction: '
+                                         f'"{orbit_pass_direction}"')
+
+                    kml_placemark_str = f'''  <Placemark>
+      <name></name>
+      <description><![CDATA[
+          <p><b>Product:</b> {basename}</p>
+          <p><b>Product type:</b> {current_file_product_type}</p>
+          <p><b>S3 path:</b> {s3_product_path_directory}</p>
+          <p><b>Center longitude:</b> {center_lon}</p>
+          <p><b>Center latitude:</b> {center_lat}</p>
+      ]]></description>
+      <Style>
+        <IconStyle>
+          <Icon>
+            <href>{icon}</href>
+          </Icon>
+        </IconStyle>
+      </Style>
+      <Point>
+        <coordinates>{center_lon},{center_lat}</coordinates>
+      </Point>
+    </Placemark>
+  </Document>
+                    '''
+
+                    substitute_in_file(
+                        f_kml, kml_file, [f'{original_basename}.png',
+                                          'overlay image',
+                                          '</Document>'],
+                        [f'{basename}_BROWSE.png', basename,
+                         kml_placemark_str])
+                    os.remove(f_kml)
+
+            if os.path.isfile(kml_file):
+                mosaic_kmz_file_list.append(kml_file)
+
             if current_product_level == 'L2':
                 epsg = str(get_product_epsg(h5_obj, current_file_product_type))
             else:
@@ -844,10 +957,10 @@ class PlantIsce3BatchProcessing(plant_isce3.PlantIsce3Script):
             os.makedirs(output_dir, exist_ok=True)
             if os.path.isfile(downloaded_file) and flag_s3_bucket:
                 print('        HDF5 already downloaded:', f)
-                product_count += 1
+
             elif os.path.isfile(downloaded_file):
                 print('        HDF5 input file:', f)
-                product_count += 1
+
             elif self.step_1_download_hdf5:
 
                 os.makedirs(os.path.dirname(downloaded_file),
@@ -856,7 +969,7 @@ class PlantIsce3BatchProcessing(plant_isce3.PlantIsce3Script):
                 try:
                     my_bucket.download_file(objects.key, f)
                     os.rename(f, downloaded_file)
-                    product_count += 1
+
                 except BaseException:
                     print('        there was an error downloading file:', f)
                     continue
@@ -911,7 +1024,7 @@ class PlantIsce3BatchProcessing(plant_isce3.PlantIsce3Script):
                     frequency_epsg_dict, downloaded_file, basename, epsg,
                     output_dir, frequency, pols, current_product_level)
 
-        return frequency_epsg_dict
+        return frequency_epsg_dict, mosaic_kmz_file_list
 
     def run_process_native_coordinates_freq(
             self, kwargs_color, kwargs_product_data_to_backscatter,
@@ -1171,7 +1284,7 @@ def substitute_in_file(filename, output_file, old_substring_list,
 
     for old_substring, new_substring in zip(old_substring_list,
                                             new_substring_list):
-        print(f'    replacing "{old_substring}" with "{new_substring}"')
+
         content = content.replace(old_substring, new_substring)
 
     with open(output_file, "w", encoding="utf-8") as file:
@@ -1212,6 +1325,15 @@ def get_product_level(h5_obj):
         product_level = product_level.decode()
 
     return product_level
+
+
+def get_orbit_pass_direction(h5_obj):
+
+    orbit_pass_direction = \
+        h5_obj['/science/LSAR/identification/orbitPassDirection'][()]
+    if not isinstance(orbit_pass_direction, str):
+        orbit_pass_direction = orbit_pass_direction.decode()
+    return orbit_pass_direction
 
 
 def get_product_epsg(h5_obj, product_type):
@@ -1306,8 +1428,8 @@ def update_tiles_map_dict(tiles_map_by_epsg,
 def main(argv=None):
     with plant.PlantLogger():
         parser = get_parser()
-        self_obj = PlantIsce3BatchProcessing(parser, argv)
-        ret = self_obj.run()
+        with PlantIsce3BatchProcessing(parser, argv) as self_obj:
+            ret = self_obj.run()
         return ret
 
 

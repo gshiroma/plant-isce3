@@ -97,8 +97,8 @@ def _get_data_interp_method(data_interp_method):
 def main(argv=None):
     with plant.PlantLogger():
         parser = get_parser()
-        self_obj = PlantIsce3Resample(parser, argv)
-        ret = self_obj.run()
+        with PlantIsce3Resample(parser, argv) as self_obj:
+            ret = self_obj.run()
         return ret
 
 

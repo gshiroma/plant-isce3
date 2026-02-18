@@ -63,8 +63,15 @@ def get_parser():
 
     parser.add_argument('--rtc-dem-upsampling',
                         dest='rtc_dem_upsampling',
-                        type=float,
+                        type=int,
                         help='RTC DEM upsampling factor.')
+
+    parser.add_argument('--memory-mode',
+                        dest='gcov_memory_mode',
+                        type=str,
+                        choices=['auto', 'single_block', 'geogrid',
+                                 'geogrid_and_radargrid'],
+                        help='GCOV memory mode.')
 
     parser.add_argument('--full-covariance',
                         '--fullcovariance',
@@ -175,7 +182,7 @@ class PlantIsce3Runconfig(plant_isce3.PlantIsce3Script):
                     slc_obj.getSwathMetadata('A').processed_range_bandwidth /
                     1e6))
                 if freq_a_bandwidth_mhz == 40:
-                    self.rtc_dem_upsampling = 1.0
+                    self.rtc_dem_upsampling = 1
 
         if plant.isvalid(self.step_x) and 'A' in slc_obj.frequencies:
             freq_a_dx = self.step_x
@@ -252,6 +259,11 @@ class PlantIsce3Runconfig(plant_isce3.PlantIsce3Script):
                         self.rtc_dem_upsampling
 
             groups['processing']['geocode']['output_epsg'] = int(self.epsg)
+
+            if (self.workflow_name.upper() == 'GCOV' and
+                    self.gcov_memory_mode is not None):
+                groups['processing']['geocode']['memory_mode'] = \
+                    self.gcov_memory_mode
 
             if freq_a_dx is not None:
                 groups['processing']['geocode'][
@@ -493,6 +505,9 @@ class PlantIsce3Runconfig(plant_isce3.PlantIsce3Script):
         print('            geocode:', **kwargs)
 
         if workflow_name_upper == 'GCOV':
+            if self.gcov_memory_mode is not None:
+                print('                memory_mode:', self.gcov_memory_mode,
+                      **kwargs)
             print('                apply_shadow_masking: False', **kwargs)
 
         print('                output_epsg:', self.epsg, **kwargs)
@@ -582,8 +597,8 @@ def lat_lon_to_projected(north, east, epsg):
 def main(argv=None):
     with plant.PlantLogger():
         parser = get_parser()
-        self_obj = PlantIsce3Runconfig(parser, argv)
-        ret = self_obj.run()
+        with PlantIsce3Runconfig(parser, argv) as self_obj:
+            ret = self_obj.run()
         return ret
 
 

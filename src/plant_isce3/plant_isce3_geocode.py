@@ -768,8 +768,8 @@ class PlantIsce3Geocode(plant_isce3.PlantIsce3Script):
 def main(argv=None):
     with plant.PlantLogger():
         parser = get_parser()
-        self_obj = PlantIsce3Geocode(parser, argv)
-        ret = self_obj.run()
+        with PlantIsce3Geocode(parser, argv) as self_obj:
+            ret = self_obj.run()
         return ret
 
 
