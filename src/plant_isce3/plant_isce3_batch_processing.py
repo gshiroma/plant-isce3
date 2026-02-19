@@ -788,6 +788,13 @@ class PlantIsce3BatchProcessing(plant_isce3.PlantIsce3Script):
                 if self.product_type != current_file_product_type:
                     continue
 
+            input_rslc_granule = get_input_rslc_granule(
+                h5_obj, current_file_product_type)
+            print('*** input_rslc_granule:', input_rslc_granule)
+            input_l0b_granule = get_input_l0b_granule_from_source_data(
+                h5_obj, current_file_product_type)
+            print('*** input_l0b_granule:', input_l0b_granule)
+
             kwargs_product_data_to_backscatter = {}
             if current_file_product_type == 'GSLC':
                 kwargs_product_data_to_backscatter['square'] = True
@@ -907,11 +914,21 @@ class PlantIsce3BatchProcessing(plant_isce3.PlantIsce3Script):
                         raise ValueError('Unrecognized orbit pass direction: '
                                          f'"{orbit_pass_direction}"')
 
+                    if current_file_product_type in ['GCOV', 'GSLC']:
+                        extra_info = ('<p><b>Input RSLC granule:</b>'
+                                      f' {input_rslc_granule}</p>')
+                        input_l0b_granule_basename = os.path.basename(
+                            input_l0b_granule)
+                        extra_info += ('<p><b>Input L0B granule:</b>'
+                                       f' {input_l0b_granule_basename}</p>')
+                    else:
+                        extra_info = ''
+
                     kml_placemark_str = f'''  <Placemark>
       <name></name>
       <description><![CDATA[
           <p><b>Product:</b> {basename}</p>
-          <p><b>Product type:</b> {current_file_product_type}</p>
+          <p><b>Product type:</b> {current_file_product_type}</p>{extra_info}
           <p><b>S3 path:</b> {s3_product_path_directory}</p>
           <p><b>Center longitude:</b> {center_lon}</p>
           <p><b>Center latitude:</b> {center_lat}</p>
@@ -1334,6 +1351,46 @@ def get_orbit_pass_direction(h5_obj):
     if not isinstance(orbit_pass_direction, str):
         orbit_pass_direction = orbit_pass_direction.decode()
     return orbit_pass_direction
+
+
+def get_input_rslc_granule(h5_obj, product_type):
+
+    if product_type not in ['GCOV', 'GSLC']:
+        return
+
+    input_rslc_granule = \
+        h5_obj[f'/science/LSAR/{product_type}/metadata/'
+               'processingInformation/inputs/l1SlcGranules'][()]
+    input_rslc_granule = [d.decode() for d in input_rslc_granule]
+    if len(input_rslc_granule) == 1:
+        input_rslc_granule = input_rslc_granule[0]
+    return input_rslc_granule
+
+
+def get_input_l0b_granule_from_source_data(h5_obj, product_type):
+
+    if product_type not in ['GCOV', 'GSLC']:
+        return
+
+    runconfig_contents = \
+        h5_obj[f'/science/LSAR/{product_type}/metadata/'
+               'sourceData/processingInformation/parameters/'
+               'runConfigurationContents'][()]
+    if not isinstance(runconfig_contents, str):
+        runconfig_contents = runconfig_contents.decode()
+
+    runconfig_contents_lines = runconfig_contents.split('\n')
+
+    flag_into_input_file_path = False
+    for line in runconfig_contents_lines:
+        if 'input_file_path' in line:
+            flag_into_input_file_path = True
+            continue
+        if flag_into_input_file_path and 'RRSD' in line:
+            line = line.replace('-', '')
+            input_l0b_granule = line.strip()
+
+    return input_l0b_granule
 
 
 def get_product_epsg(h5_obj, product_type):

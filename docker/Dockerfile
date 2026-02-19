@@ -2,7 +2,7 @@ FROM --platform=linux/amd64 oraclelinux:8
 
 LABEL author="Gustavo H. X. Shiroma" \
     description="PLAnT-ISCE3" \
-    version="1.0.2"
+    version="0.3.0"
 
 RUN yum -y update &&\
     yum -y install curl &&\
@@ -32,14 +32,13 @@ RUN ${CONDA_PREFIX}/bin/conda init bash && \
     conda config --append channels nodefaults &&\
     conda config --set channel_priority strict &&\
     conda config --set show_channel_urls True &&\
-    conda update --all --yes --channel conda-forge --override-channels &&\
+    conda update --all --yes --channel conda-forge --override-channels python=3.10  &&\
     conda install --yes --channel conda-forge --override-channels --file requirements.txt &&\
     conda install --yes --channel conda-forge pytest
 
 # copy PLAnT-ISCE3 source code and set plant_isce3_user as owner
 COPY --chown=plant_isce3_user:plant_isce3_user . /home/plant_isce3_user/plant-isce3
 
-RUN python -m pip install  --no-deps /home/plant_isce3_user/plant-isce3 &&\
-    echo "conda activate isce3" >> /home/plant_isce3_user/.bashrc
+RUN python -m pip install  --no-deps /home/plant_isce3_user/plant-isce3
 
 WORKDIR /home/plant_isce3_user/plant-isce3
