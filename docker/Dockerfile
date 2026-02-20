@@ -2,7 +2,7 @@ FROM --platform=linux/amd64 oraclelinux:8
 
 LABEL author="Gustavo H. X. Shiroma" \
     description="PLAnT-ISCE3" \
-    version="0.3.0"
+    version="0.3.1"
 
 RUN yum -y update &&\
     yum -y install curl &&\
@@ -25,16 +25,15 @@ RUN curl -sSL "https://github.com/conda-forge/miniforge/releases/latest/download
 
 ENV PATH=${CONDA_PREFIX}/bin:${PATH}
 
-COPY ../requirements.txt .
+COPY ../environment.yml .
 
 RUN ${CONDA_PREFIX}/bin/conda init bash && \
     conda config --prepend channels conda-forge &&\
     conda config --append channels nodefaults &&\
     conda config --set channel_priority strict &&\
     conda config --set show_channel_urls True &&\
-    conda update --all --yes --channel conda-forge --override-channels python=3.10  &&\
-    conda install --yes --channel conda-forge --override-channels --file requirements.txt &&\
-    conda install --yes --channel conda-forge pytest
+    conda update --all --yes --channel conda-forge --override-channels &&\
+    conda env create --yes --file environment.yml
 
 # copy PLAnT-ISCE3 source code and set plant_isce3_user as owner
 COPY --chown=plant_isce3_user:plant_isce3_user . /home/plant_isce3_user/plant-isce3
