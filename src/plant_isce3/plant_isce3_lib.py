@@ -461,17 +461,19 @@ def add_arguments(parser,
         )
 
 
-def is_nisar_product(h5_obj):
+def is_nisar_format(h5_obj):
 
-    if 'mission_name' not in h5_obj.attrs:
+    if 'mission_name' in h5_obj.attrs:
+        mission_name = h5_obj.attrs['mission_name']
+        try:
+            if not isinstance(mission_name, str):
+                mission_name = mission_name.decode()
+            if mission_name == 'NISAR':
+                return True
+        except BaseException:
+            pass
 
-        return (get_nisar_identification_scalar(h5_obj, 'platformName', '') ==
-                'NISAR')
-
-    mission_name = h5_obj.attrs['mission_name']
-    if not isinstance(mission_name, str):
-        mission_name = mission_name.decode()
-    return mission_name == 'NISAR'
+    return get_nisar_product_type(h5_obj) is not None
 
 
 def get_nisar_identification_scalar(h5_obj, scalar_name, default_value=None):
@@ -787,7 +789,7 @@ class PlantIsce3Sensor():
 
         if self.input_file.endswith('.h5'):
             with plant.h5py_file_wrapper(self.input_file, 'r') as h5_obj:
-                if not is_nisar_product(h5_obj):
+                if not is_nisar_format(h5_obj):
                     print(f'ERROR file not recognized: {self.input_file}')
                     return
 
