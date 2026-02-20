@@ -19,6 +19,9 @@ from plant_isce3.readers.orbit import load_orbit_from_xml
 
 import plant
 
+LIST_OF_SUPPORTED_NISAR_PRODUCTS = ['RRSD', 'RSLC', 'GCOV', 'GSLC', 'STATIC']
+LIST_OF_NISAR_INSTRUMENTS = ['LSAR', 'SSAR']
+
 DEFAULT_ISCE3_TEMPORARY_FORMAT = 'GTiff'
 
 
@@ -458,6 +461,47 @@ def add_arguments(parser,
         )
 
 
+def is_nisar_product(h5_obj):
+
+    if 'mission_name' not in h5_obj.attrs:
+
+        return (get_nisar_identification_scalar(h5_obj, 'platformName', '') ==
+                'NISAR')
+
+    mission_name = h5_obj.attrs['mission_name']
+    if not isinstance(mission_name, str):
+        mission_name = mission_name.decode()
+    return mission_name == 'NISAR'
+
+
+def get_nisar_identification_scalar(h5_obj, scalar_name, default_value=None):
+
+    for instrument in LIST_OF_NISAR_INSTRUMENTS:
+        product_type_key = (f'/science/{instrument}/'
+                            f'identification/{scalar_name}')
+        if product_type_key in h5_obj:
+            product_type = h5_obj[product_type_key][()]
+            if not isinstance(product_type, str):
+                product_type = product_type.decode()
+            return product_type
+    return default_value
+
+
+def get_nisar_product_type(h5_obj):
+
+    return get_nisar_identification_scalar(h5_obj, 'productType')
+
+
+def get_nisar_product_level(h5_obj):
+
+    return get_nisar_identification_scalar(h5_obj, 'productLevel')
+
+
+def get_nisar_orbit_pass_direction(h5_obj):
+
+    return get_nisar_identification_scalar(h5_obj, 'orbitPassDirection')
+
+
 def multilook_isce3(input_raster_file, output_file,
                     nlooks_y, nlooks_x,
                     transform_square=False,
@@ -742,9 +786,26 @@ class PlantIsce3Sensor():
     def load_product(self):
 
         if self.input_file.endswith('.h5'):
+            with plant.h5py_file_wrapper(self.input_file, 'r') as h5_obj:
+                if not is_nisar_product(h5_obj):
+                    print(f'ERROR file not recognized: {self.input_file}')
+                    return
+
+                product_type = get_nisar_product_type(h5_obj)
+
+                if product_type is None:
+                    print('ERROR cannot determine NISAR product type for file:'
+                          f' {self.input_file}')
+                    return
+
+                if product_type not in LIST_OF_SUPPORTED_NISAR_PRODUCTS:
+                    print('ERROR unsupported NISAR product type:'
+                          f' {product_type}. List of supported NISAR products:'
+                          f' {LIST_OF_SUPPORTED_NISAR_PRODUCTS}')
+                    return
+
             self.sensor_name = 'NISAR'
-            self.nisar_product_obj = open_product(
-                self.input_file)
+            self.nisar_product_obj = open_product(self.input_file)
             self.frequency = self.get_frequency_str()
             return
 

@@ -780,9 +780,12 @@ class PlantIsce3BatchProcessing(plant_isce3.PlantIsce3Script):
                                                  swmr=True)
                 self.nisar_product_obj = open_product(os.path.join(path, f))
 
-            current_file_product_type = get_product_type(h5_obj)
-            current_product_level = get_product_level(h5_obj)
-            orbit_pass_direction = get_orbit_pass_direction(h5_obj)
+            current_file_product_type = plant_isce3.get_nisar_product_type(
+                h5_obj)
+            current_product_level = plant_isce3.get_nisar_product_level(
+                h5_obj)
+            orbit_pass_direction = plant_isce3.get_nisar_orbit_pass_direction(
+                h5_obj)
 
             if self.product_type is not None:
                 if self.product_type != current_file_product_type:
@@ -1322,35 +1325,6 @@ def load_aws_credentials_boto3(profile="default"):
     if frozen_creds.token:
         driver_kwds["session_token"] = frozen_creds.token.encode()
     return driver_kwds
-
-
-def get_product_type(h5_obj):
-
-    product_type = \
-        h5_obj['/science/LSAR/identification/productType'][()]
-    if not isinstance(product_type, str):
-        product_type = product_type.decode()
-
-    return product_type
-
-
-def get_product_level(h5_obj):
-
-    product_level = \
-        h5_obj['/science/LSAR/identification/productLevel'][()]
-    if not isinstance(product_level, str):
-        product_level = product_level.decode()
-
-    return product_level
-
-
-def get_orbit_pass_direction(h5_obj):
-
-    orbit_pass_direction = \
-        h5_obj['/science/LSAR/identification/orbitPassDirection'][()]
-    if not isinstance(orbit_pass_direction, str):
-        orbit_pass_direction = orbit_pass_direction.decode()
-    return orbit_pass_direction
 
 
 def get_input_rslc_granule(h5_obj, product_type):
