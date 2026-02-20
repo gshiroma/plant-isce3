@@ -1323,10 +1323,16 @@ class PlantIsce3Util(plant_isce3.PlantIsce3Script):
         image_obj = self.get_grids_ref(
             'layoverShadowMask', nisar_product_obj, image_obj)
 
-        layover_shadow_mask_ctable = self.get_layover_shadow_mask_ctable()
+        if self.nlooks_az != 1 or self.nlooks_rg != 1:
 
-        self.save_image(image_obj, output_file=self.output_file,
-                        out_null=255, ctable=layover_shadow_mask_ctable)
+            plant.filter(image_obj, output_file=self.output_file,
+                         nlooks=[self.nlooks_az, self.nlooks_rg],
+                         force=self.force)
+
+        else:
+            layover_shadow_mask_ctable = self.get_layover_shadow_mask_ctable()
+            self.save_image(image_obj, output_file=self.output_file,
+                            out_null=255, ctable=layover_shadow_mask_ctable)
         plant.append_output_file(self.output_file)
 
     def save_binary_water_mask(self, nisar_product_obj=None,
@@ -1335,10 +1341,16 @@ class PlantIsce3Util(plant_isce3.PlantIsce3Script):
         image_obj = self.get_grids_ref('waterMask', nisar_product_obj,
                                        image_obj)
 
-        binary_water_mask_ctable = self.get_binary_water_mask_ctable()
+        if self.nlooks_az != 1 or self.nlooks_rg != 1:
 
-        self.save_image(image_obj, output_file=self.output_file,
-                        out_null=255, ctable=binary_water_mask_ctable)
+            plant.filter(image_obj, output_file=self.output_file,
+                         nlooks=[self.nlooks_az, self.nlooks_rg],
+                         force=self.force)
+
+        else:
+            binary_water_mask_ctable = self.get_binary_water_mask_ctable()
+            self.save_image(image_obj, output_file=self.output_file,
+                            out_null=255, ctable=binary_water_mask_ctable)
         plant.append_output_file(self.output_file)
 
     def save_lut(self, h5_path, pol_list=[], flag_skip_if_error=True):

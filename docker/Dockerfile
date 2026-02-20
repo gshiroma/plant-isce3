@@ -2,7 +2,7 @@ FROM --platform=linux/amd64 oraclelinux:8
 
 LABEL author="Gustavo H. X. Shiroma" \
     description="PLAnT-ISCE3" \
-    version="1.0.2"
+    version="0.3.1"
 
 RUN yum -y update &&\
     yum -y install curl &&\
