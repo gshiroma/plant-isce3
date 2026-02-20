@@ -8,3 +8,4 @@ libnetcdf
 matplotlib
 scipy
 h5py
+pyre>=1.12.5
