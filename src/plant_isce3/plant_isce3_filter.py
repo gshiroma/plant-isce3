@@ -242,17 +242,21 @@ class PlantIsce3Filter(plant_isce3.PlantIsce3Script):
         input_raster = self.get_input_raster_from_nisar_product(
             plant_product_obj=plant_product_obj)
 
-        pols = None
-        if self.frequency is not None:
-            pols = plant_product_obj.nisar_product_obj.polarizations[
-                self.frequency]
-            if self.band is not None:
-                if not plant.is_sequence(self.band):
-                    band_list = [self.band]
-                else:
-                    band_list = self.band
+        if self.frequency is None:
+            freq_pol_dict = plant_product_obj.nisar_product_obj.polarizations
+            self.frequency = list(freq_pol_dict.keys())[0]
+            print('WARNING frequency not specified, using first'
+                  f' available frequency in the product: {self.frequency}')
 
-                pols = [pols[b] for b in band_list]
+        pols = plant_product_obj.nisar_product_obj.polarizations[
+            self.frequency]
+        if self.band is not None:
+            if not plant.is_sequence(self.band):
+                band_list = [self.band]
+            else:
+                band_list = self.band
+
+            pols = [pols[b] for b in band_list]
 
         self.nlooks_y = nlooks_y
         self.nlooks_x = nlooks_x
@@ -262,8 +266,8 @@ class PlantIsce3Filter(plant_isce3.PlantIsce3Script):
         if self.flag_save_metadata is not False:
             metadata_dict = {}
             metadata_dict['INPUT_FILE'] = self.input_file
-            if self.frequency is not None:
-                metadata_dict['FREQUENCY'] = self.frequency
+
+            metadata_dict['FREQUENCY'] = self.frequency
             if self.nlooks_y is not None:
                 metadata_dict['NLOOKS_Y'] = nlooks_y
             if self.nlooks_x is not None:
@@ -276,11 +280,8 @@ class PlantIsce3Filter(plant_isce3.PlantIsce3Script):
                 metadata_dict['POLARIZATIONS'] = pols
 
             try:
-                bounding_polygon = plant_product_obj.get_h5_dataset(
-                    '/science/LSAR/identification/'
-                    'boundingPolygon')
-                if not isinstance(bounding_polygon, str):
-                    bounding_polygon = bounding_polygon.decode()
+                bounding_polygon = \
+                    plant_product_obj.get_nisar_product_bounding_polygon()
                 metadata_dict['BOUNDING_POLYGON'] = bounding_polygon
             except BaseException:
                 pass
@@ -303,14 +304,17 @@ class PlantIsce3Filter(plant_isce3.PlantIsce3Script):
 
         elif self.masked_data_file:
             image_ref = self.get_grids_ref(
-                'mask', plant_product_obj.nisar_product_obj, image_obj=None,
+                'mask', self.frequency,
+                plant_product_obj.nisar_product_obj, image_obj=None,
                 valid_products=['GCOV', 'GSLC'])
 
             image_obj = self.read_image(image_ref, band=0)
 
             mask_array_obj = plant.filter_data(image_obj,
+                                               snap_to_multilook_grid=True,
                                                nlooks=[self.nlooks_az,
-                                                       self.nlooks_rg])
+                                                       self.nlooks_rg],
+                                               null=255)
             del image_obj
 
             mask_array_obj.image = np.asarray(mask_array_obj.image,

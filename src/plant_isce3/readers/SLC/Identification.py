@@ -22,8 +22,8 @@ class Identification(BaseId):
         BaseId.unpack(self, h5grp)
 
         self.trackNumber = extractScalar(h5grp, 'trackNumber',
-                                      int, self.context['info'],
+                                      int,
                                       'Track number could not be identified')
         self.frameNumber = extractScalar(h5grp, 'frameNumber',
-                                      int, self.context['info'],
+                                      int,
                                       'Frame number could not be identified')

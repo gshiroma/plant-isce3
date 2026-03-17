@@ -11,6 +11,8 @@ IDENTIFICATION_DICT = {
         ['absolute orbit number', 1, int],
     'trackNumber':
         ['track number', 1, int],
+    'orbitPassDirection':
+        ['orbit pass direction', None, str],
     'frameNumber':
         ['frame number', 1, int],
     'granuleId':
@@ -19,6 +21,10 @@ IDENTIFICATION_DICT = {
         ['product version', None, str],
     'processingDateTime':
         ['processing date time', None, str],
+    'zeroDopplerStartTime':
+        ['zero-Doppler start time', None, str],
+    'zeroDopplerEndTime':
+        ['zero-Doppler end time', None, str],
     'platformName':
         ['platform name', None, str],
     'isDithered':
@@ -155,18 +161,34 @@ class PlantIsce3Info(plant_isce3.PlantIsce3Script):
         lut_xf = x_coordinates[-1]
         lut_dx = x_coordinates[1] - x_coordinates[0]
 
-        lut_y0_index = (lut_y0 - y0) / lut_dy
-        lut_yf_index = (lut_yf - yf) / lut_dy
-        lut_x0_index = (lut_x0 - x0) / lut_dx
-        lut_xf_index = (lut_xf - xf) / lut_dx
+        lut_y0_index = (lut_y0 - y0) / dy
+        lut_yf_index = (lut_yf - yf) / dy
+        lut_x0_index = (lut_x0 - x0) / dx
+        lut_xf_index = (lut_xf - xf) / dx
 
-        lut_y0_status = '[ OK ]' if lut_dy / \
-            abs(lut_dy) * lut_y0_index < 0 else '[FAIL]'
-        lut_yf_status = '[ OK ]' if lut_dy / \
-            abs(lut_dy) * lut_yf_index > 0 else '[FAIL]'
+        if lut_dy / abs(lut_dy) * lut_y0_index <= 0:
+            lut_y0_status = '[OK]'
 
-        lut_x0_status = '[ OK ]' if lut_x0_index < 0 else '[FAIL]'
-        lut_xf_status = '[ OK ]' if lut_xf_index > 0 else '[FAIL]'
+        else:
+            lut_y0_status = '[FAIL]'
+
+        if lut_dy / abs(lut_dy) * lut_yf_index >= 0:
+            lut_yf_status = '[OK]'
+
+        else:
+            lut_yf_status = '[FAIL]'
+
+        if lut_x0_index <= 0:
+            lut_x0_status = '[OK]'
+
+        else:
+            lut_x0_status = '[FAIL]'
+
+        if lut_xf_index >= 0:
+            lut_xf_status = '[OK]'
+
+        else:
+            lut_xf_status = '[FAIL]'
 
         print(f'{lut_name}:')
 
@@ -175,21 +197,21 @@ class PlantIsce3Info(plant_isce3.PlantIsce3Script):
             if (product_type != 'RSLC' or
                     'noiseEquivalentBackscatter' not in lut_group_path):
                 print(f'{lut_y0_status} start {coordinate_y_descr}'
-                      f' (lut_y0 - y0) / lut_dy = lut_y0_index => '
-                      f' ({lut_y0} - {y0}) / {lut_dy} ='
+                      f' (lut_y0 - y0) / dy ='
+                      f' ({lut_y0} - {y0}) / {dy} ='
                       f' {lut_y0_index}')
                 print(f'{lut_yf_status} end {coordinate_y_descr}'
-                      f' (lut_yf - yf) / lut_dy = lut_yf_index => '
-                      f' ({lut_yf} - {yf}) / {lut_dy} ='
+                      f' (lut_yf - yf) / dy ='
+                      f' ({lut_yf} - {yf}) / {dy} ='
                       f' {lut_yf_index}')
 
             print(f'{lut_x0_status} start {coordinate_x_descr}'
-                  f' (lut_x0 - x0) / lut_dx = lut_x0_index => '
-                  f' ({lut_x0} - {x0}) / {lut_dx} ='
+                  f' (lut_x0 - x0) / dx ='
+                  f' ({lut_x0} - {x0}) / {dx} ='
                   f' {lut_x0_index}')
             print(f'{lut_xf_status} end {coordinate_x_descr}'
-                  f' (lut_xf - xf) / lut_dx = lut_xf_index => '
-                  f' ({lut_xf} - {xf}) / {lut_dx} ='
+                  f' (lut_xf - xf) / dx ='
+                  f' ({lut_xf} - {xf}) / {dx} ='
                   f' {lut_xf_index}')
 
     def _print_nisar_product_info(self):
@@ -496,6 +518,20 @@ class PlantIsce3Info(plant_isce3.PlantIsce3Script):
                 print(f'## {text}: {value}')
             else:
                 print(f'{text}: {value}')
+
+            if dataset == 'absoluteOrbitNumber':
+
+                cycle_number = \
+                    plant_isce3.get_nisar_product_cycle_number(h5_obj)
+                print(f'cycle number: {cycle_number}')
+
+                mission_id = plant_isce3.get_nisar_product_mission_id(h5_obj)
+
+                if mission_id == 'NISAR':
+                    cycle_number = \
+                        plant_isce3.get_nisar_product_cycle_number(
+                            h5_obj, flag_no_offset=True)
+                    print(f'cycle number (without offset): {cycle_number}')
 
 
 def lat_lon_to_projected(north, east, epsg):

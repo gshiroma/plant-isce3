@@ -15,6 +15,8 @@ import numpy as np
 import isce3
 from osgeo import osr, gdal, gdal_array
 
+import shapely.wkt
+
 from plant_isce3.readers.orbit import load_orbit_from_xml
 
 import plant
@@ -51,6 +53,12 @@ def add_arguments(parser,
                   min_nlooks=0,
                   geo2rdr_threshold=0,
                   geo2rdr_num_iter=0,
+
+                  nlooks_by_frequency=0,
+                  nlooks_x_a=0,
+                  nlooks_y_a=0,
+                  nlooks_x_b=0,
+                  nlooks_y_b=0,
 
                   epsg=0,
                   frequency=0,
@@ -319,6 +327,38 @@ def add_arguments(parser,
             help="Maximum number of iterations for geo2rdr",
         )
 
+    if nlooks_by_frequency or nlooks_x_a:
+        parser.add_argument('--nlooks-x-freq-a',
+                            '--nlooks-x-a',
+                            type=int,
+                            help=('Number of looks in the X direction'
+                                  ' for frequency A (when available)'),
+                            dest='nlooks_x_a')
+
+    if nlooks_by_frequency or nlooks_y_a:
+        parser.add_argument('--nlooks-y-freq-a',
+                            '--nlooks-y-a',
+                            type=int,
+                            help=('Number of looks in the Y direction'
+                                  ' for frequency A (when available)'),
+                            dest='nlooks_y_a')
+
+    if nlooks_by_frequency or nlooks_x_b:
+        parser.add_argument('--nlooks-x-freq-b',
+                            '--nlooks-x-b',
+                            type=int,
+                            help=('Number of looks in the X direction'
+                                  ' for frequency B (when available)'),
+                            dest='nlooks_x_b')
+
+    if nlooks_by_frequency or nlooks_y_b:
+        parser.add_argument('--nlooks-y-freq-b',
+                            '--nlooks-y-b',
+                            type=int,
+                            help=('Number of looks in the Y direction'
+                                  ' for frequency B (when available)'),
+                            dest='nlooks_y_b')
+
     if epsg:
         parser.add_argument(
             "--epsg",
@@ -483,15 +523,43 @@ def get_nisar_identification_scalar(h5_obj, scalar_name, default_value=None):
                             f'identification/{scalar_name}')
         if product_type_key in h5_obj:
             product_type = h5_obj[product_type_key][()]
-            if not isinstance(product_type, str):
+            if isinstance(product_type, (bytes, np.bytes_)):
                 product_type = product_type.decode()
             return product_type
     return default_value
 
 
+def get_nisar_product_instrument_name(h5_obj):
+
+    return get_nisar_identification_scalar(h5_obj, 'instrumentName')
+
+
 def get_nisar_product_type(h5_obj):
 
     return get_nisar_identification_scalar(h5_obj, 'productType')
+
+
+def get_nisar_product_bounding_polygon(h5_obj, flag_as_list=False):
+
+    polygon_str = \
+        get_nisar_identification_scalar(h5_obj, 'boundingPolygon')
+
+    if not flag_as_list:
+        return polygon_str
+
+    polygon_str = polygon_str.replace('POLYGON', '')
+    polygon_str_ref = ''
+    while polygon_str_ref != polygon_str:
+        polygon_str_ref = polygon_str
+        polygon_str = polygon_str.replace('(', '')
+    polygon_str_ref = ''
+    while polygon_str_ref != polygon_str:
+        polygon_str_ref = polygon_str
+        polygon_str = polygon_str.replace(')', '')
+    polygon = polygon_str.split(',')
+    polygon = [p.strip().split(' ') for p in polygon]
+
+    return polygon
 
 
 def get_nisar_product_level(h5_obj):
@@ -502,6 +570,68 @@ def get_nisar_product_level(h5_obj):
 def get_nisar_orbit_pass_direction(h5_obj):
 
     return get_nisar_identification_scalar(h5_obj, 'orbitPassDirection')
+
+
+def get_nisar_granule_id(h5_obj):
+
+    return get_nisar_identification_scalar(h5_obj, 'granuleId')
+
+
+def get_nisar_product_absolute_orbit_number(h5_obj):
+
+    return get_nisar_identification_scalar(h5_obj, 'absoluteOrbitNumber')
+
+
+def get_nisar_product_mission_id(h5_obj):
+
+    return get_nisar_identification_scalar(h5_obj, 'missionId')
+
+
+def get_nisar_product_cycle_number(h5_obj, flag_no_offset=False):
+
+    absolute_orbit_number = get_nisar_product_absolute_orbit_number(h5_obj)
+
+    mission_id = get_nisar_product_mission_id(h5_obj)
+
+    if mission_id == 'NISAR' and not flag_no_offset:
+
+        offset = 792
+    else:
+        offset = 1
+
+    cycle_number = (absolute_orbit_number - offset) // 173 + 1
+
+    return cycle_number
+
+
+def get_nisar_product_track_number(h5_obj):
+
+    return get_nisar_identification_scalar(h5_obj, 'trackNumber')
+
+
+def get_nisar_product_frame_number(h5_obj):
+
+    return get_nisar_identification_scalar(h5_obj, 'frameNumber')
+
+
+def get_nisar_product_is_mixed_mode(h5_obj):
+
+    return get_nisar_identification_scalar(h5_obj, 'isMixedMode')
+
+
+def get_nisar_product_is_full_frame(h5_obj):
+
+    return get_nisar_identification_scalar(h5_obj, 'isFullFrame')
+
+
+def get_nisar_product_zero_doppler_start_time(h5_obj):
+
+    return get_nisar_identification_scalar(h5_obj, 'zeroDopplerStartTime')
+
+
+def get_nisar_product_zero_doppler_end_time(h5_obj):
+
+    return get_nisar_identification_scalar(h5_obj, 'zeroDopplerEndTime')
 
 
 def multilook_isce3(input_raster_file, output_file,
@@ -595,8 +725,9 @@ def multilook_isce3(input_raster_file, output_file,
                     multilooked_image_is_finite = \
                         isce3.signal.multilook_summed(
                             is_finite_array, int(nlooks_y), int(nlooks_x))
-                    multilooked_image = (multilooked_image /
-                                         multilooked_image_is_finite)
+                    with np.errstate(divide='ignore', invalid='ignore'):
+                        multilooked_image = (multilooked_image /
+                                             multilooked_image_is_finite)
                     multilooked_image[multilooked_image_is_finite == 0] = \
                         np.nan
 
@@ -629,14 +760,8 @@ def multilook_isce3(input_raster_file, output_file,
                                               projection=projection)
     if plant_geogrid_obj.has_valid_coordinates():
 
-        if verbose:
-            print('geotransform (original):', geotransform)
         geotransform[1] = geotransform[1] * nlooks_x
         geotransform[5] = geotransform[5] * nlooks_y
-
-        if verbose:
-            print('geotransform (multilooked):', geotransform)
-            print('projection:', projection)
 
         output_gdal_ds.SetGeoTransform(geotransform)
         output_gdal_ds.SetProjection(projection)
@@ -1238,11 +1363,102 @@ class PlantIsce3Sensor():
         if (self.sensor_name != 'NISAR'):
             raise RuntimeError
 
-        h5_obj = plant.h5py_file_wrapper(self.input_file, *args, **kwargs)
-        ret = h5_obj[path][()]
-        h5_obj.close()
+        if not is_nisar_format(self.input_file):
+            raise RuntimeError(f'ERROR file not recognized: {self.input_file}')
+
+        with plant.h5py_file_wrapper(self.input_file, *args, **kwargs) as \
+                h5_obj:
+            ret = h5_obj[path][()]
 
         return ret
+
+    def get_nisar_identification_scalar(self, scalar_name, default_value=None):
+        with plant.h5py_file_wrapper(self.input_file, 'r') as h5_obj:
+            scalar = get_nisar_identification_scalar(
+                h5_obj, scalar_name, default_value=default_value)
+
+        return scalar
+
+    def get_nisar_product_instrument_name(self):
+        with plant.h5py_file_wrapper(self.input_file, 'r') as h5_obj:
+            instrument_name = get_nisar_product_instrument_name(h5_obj)
+        return instrument_name
+
+    def get_nisar_product_type(self):
+        with plant.h5py_file_wrapper(self.input_file, 'r') as h5_obj:
+            product_type = get_nisar_product_type(h5_obj)
+        return product_type
+
+    def get_nisar_product_bounding_polygon(self, flag_as_list=False):
+        with plant.h5py_file_wrapper(self.input_file, 'r') as h5_obj:
+            polygon = get_nisar_product_bounding_polygon(
+                h5_obj, flag_as_list=flag_as_list)
+
+        return polygon
+
+    def get_nisar_product_level(self):
+        with plant.h5py_file_wrapper(self.input_file, 'r') as h5_obj:
+            product_level = get_nisar_product_level(h5_obj)
+        return product_level
+
+    def get_nisar_orbit_pass_direction(self):
+        with plant.h5py_file_wrapper(self.input_file, 'r') as h5_obj:
+            orbit_pass_direction = get_nisar_orbit_pass_direction(h5_obj)
+        return orbit_pass_direction
+
+    def get_nisar_granule_id(self):
+        with plant.h5py_file_wrapper(self.input_file, 'r') as h5_obj:
+            granule_id = get_nisar_granule_id(h5_obj)
+        return granule_id
+
+    def get_nisar_product_absolute_orbit_number(self):
+        with plant.h5py_file_wrapper(self.input_file, 'r') as h5_obj:
+            absolute_orbit_number = \
+                get_nisar_product_absolute_orbit_number(h5_obj)
+        return absolute_orbit_number
+
+    def get_nisar_product_cycle_number(self):
+        with plant.h5py_file_wrapper(self.input_file, 'r') as h5_obj:
+            cycle_number = get_nisar_product_cycle_number(h5_obj)
+        return cycle_number
+
+    def get_nisar_product_track_number(self):
+
+        with plant.h5py_file_wrapper(self.input_file, 'r') as h5_obj:
+            track_number = get_nisar_product_track_number(h5_obj)
+        return track_number
+
+    def get_nisar_product_frame_number(self):
+        with plant.h5py_file_wrapper(self.input_file, 'r') as h5_obj:
+            product_frame_number = get_nisar_product_frame_number(h5_obj)
+        return product_frame_number
+
+    def get_nisar_product_is_mixed_mode(self):
+
+        with plant.h5py_file_wrapper(self.input_file, 'r') as h5_obj:
+            is_mixed_mode = get_nisar_product_is_mixed_mode(h5_obj)
+        return is_mixed_mode
+
+    def get_nisar_product_is_full_frame(self):
+
+        with plant.h5py_file_wrapper(self.input_file, 'r') as h5_obj:
+            is_full_frame = get_nisar_product_is_full_frame(h5_obj)
+        return is_full_frame
+
+    def get_nisar_product_zero_doppler_start_time(self):
+
+        with plant.h5py_file_wrapper(self.input_file, 'r') as h5_obj:
+            zero_doppler_start_time = \
+                get_nisar_product_zero_doppler_start_time(h5_obj)
+        return zero_doppler_start_time
+
+    def get_nisar_product_zero_doppler_end_time(self):
+
+        with plant.h5py_file_wrapper(self.input_file, 'r') as h5_obj:
+            zero_doppler_end_time = \
+                get_nisar_product_zero_doppler_end_time(h5_obj)
+
+        return zero_doppler_end_time
 
 
 class PlantIsce3Script(plant.PlantScript):
@@ -1303,7 +1519,8 @@ class PlantIsce3Script(plant.PlantScript):
             if os.path.isfile(envi_header):
                 os.remove(envi_header)
 
-    def get_grids_ref(self, layer_name, nisar_product_obj, image_obj,
+    def get_grids_ref(self, layer_name, frequency,
+                      nisar_product_obj, image_obj,
                       valid_products=['GCOV', 'GSLC', 'STATIC']):
         if image_obj is not None:
             return image_obj
@@ -1318,7 +1535,7 @@ class PlantIsce3Script(plant.PlantScript):
             grid_path = (f'{nisar_product_obj.GridPath}/{layer_name}')
         else:
             grid_path = (f'{nisar_product_obj.GridPath}'
-                         f'/frequency{self.frequency}/{layer_name}')
+                         f'/frequency{frequency}/{layer_name}')
         image_ref = f'NETCDF:{self.input_file}:{grid_path}'
 
         return image_ref
@@ -1440,7 +1657,6 @@ class PlantIsce3Script(plant.PlantScript):
                         self.epsg)
 
     def get_coordinates_from_h5_file(self, nisar_product_obj):
-        import shapely.wkt
 
         polygon = nisar_product_obj.identification.boundingPolygon
         print('bounding polygon:')
@@ -1952,7 +2168,7 @@ class PlantIsce3Script(plant.PlantScript):
         if not self.cmap:
             self.cmap = 'viridis'
 
-        n_subswaths = np.max(mask_array[(mask_array != 255)])
+        n_subswaths = min(np.max(mask_array[(mask_array < 10)]), 5)
         print('number of subswaths:', n_subswaths)
 
         for subswath in range(1, n_subswaths + 1):
@@ -2061,6 +2277,166 @@ class PlantIsce3Script(plant.PlantScript):
             print('*** Doppler Centroid: zero dop (Sentinel-1)')
             doppler_centroid_lut = isce3.core.LUT2d()
         return doppler_centroid_lut
+
+    def parse_nisar_s3_path(self, s3_path):
+        s3_path_splitted = s3_path.split('/')
+
+        year_range = [str(y) for y in range(2025, 2050)]
+        year_offset = None
+        for i, s3_path_part in enumerate(s3_path_splitted):
+            if s3_path_part not in year_range:
+                continue
+            year_offset = i
+            break
+        if year_offset is None:
+            raise ValueError(f'Could not find year in S3 path: {s3_path}')
+        ret_dict = {}
+        ret_dict['year'] = s3_path_splitted[year_offset]
+        ret_dict['month'] = s3_path_splitted[year_offset + 1]
+        ret_dict['day'] = s3_path_splitted[year_offset + 2]
+
+        return ret_dict
+
+    def parse_nisar_product_filename(self, filename_with_extension):
+        return parse_nisar_product_filename(filename_with_extension)
+
+
+def parse_nisar_product_filename(filename_with_extension):
+    filename = os.path.basename(filename_with_extension).split('.')[0]
+    splitted_filename = filename.split('_')
+    ret_dict = {}
+
+    if splitted_filename[0] != 'NISAR':
+        raise ValueError(f'Unrecognized filename format: {filename}')
+
+    instrument_char = splitted_filename[1][0]
+    if instrument_char == 'L':
+        instrument = 'LSAR'
+    elif instrument_char == 'S':
+        instrument = 'SSAR'
+    else:
+        raise ValueError(
+            f'Unrecognized instrument character "{instrument_char}"'
+            ' in filename: {filename}')
+    ret_dict['instrument_char'] = instrument_char
+    ret_dict['instrument'] = instrument
+
+    level = int(splitted_filename[1][1])
+    ret_dict['level'] = level
+
+    processing_type_chars = splitted_filename[2]
+    if processing_type_chars == 'PR':
+        processing_type = 'Production'
+    elif processing_type_chars == 'UR':
+        processing_type = 'Urgent Response'
+    else:
+        raise ValueError(
+            'Unrecognized processing type characters'
+            f' "{processing_type_chars}"'
+            f' in filename: {filename}')
+
+    ret_dict['processing_type_chars'] = processing_type_chars
+    ret_dict['processing_type'] = processing_type
+
+    product_type = splitted_filename[3]
+    ret_dict['product_type'] = product_type
+
+    if product_type not in ['RRSD', 'RSLC', 'GCOV', 'GSLC', 'SME2']:
+        raise ValueError(
+            'Not supported product type "{product_type}"'
+            f' in filename: {filename}')
+
+    cycle_number = int(splitted_filename[4])
+    ret_dict['cycle_number'] = cycle_number
+
+    track_number = int(splitted_filename[5])
+    ret_dict['track_number'] = track_number
+
+    orbit_direction_char = splitted_filename[6]
+    if orbit_direction_char == 'A':
+        orbit_direction = 'Ascending'
+    elif orbit_direction_char == 'D':
+        orbit_direction = 'Descending'
+    else:
+        raise ValueError(
+            'Unrecognized orbit direction character'
+            f' "{orbit_direction_char}"'
+            f' in filename: {filename}')
+    ret_dict['orbit_direction_char'] = orbit_direction_char
+    ret_dict['orbit_direction'] = orbit_direction
+
+    if product_type == 'RRSD':
+        radar_configuration_mode = splitted_filename[7][0:3]
+        ret_dict['radar_configuration_mode'] = radar_configuration_mode
+        radar_processing_mode = splitted_filename[7][4]
+        ret_dict['radar_processing_mode'] = radar_processing_mode
+        offset = 8
+    else:
+        frame_number = int(splitted_filename[7])
+        ret_dict['frame_number'] = frame_number
+        mode_freq_a = splitted_filename[8][0:2]
+        mode_freq_b = splitted_filename[8][2:4]
+        ret_dict['mode_freq_a'] = mode_freq_a
+        ret_dict['mode_freq_b'] = mode_freq_b
+        pol_freq_a = splitted_filename[9][0:2]
+        pol_freq_b = splitted_filename[9][2:4]
+        ret_dict['pol_freq_a'] = pol_freq_a
+        ret_dict['pol_freq_b'] = pol_freq_b
+        radar_processing_mode = splitted_filename[10]
+        ret_dict['radar_processing_mode'] = radar_processing_mode
+        offset = 11
+
+    start_date_time = splitted_filename[offset]
+    ret_dict['start_date_time'] = start_date_time
+    end_date_time = splitted_filename[offset + 1]
+    ret_dict['end_date_time'] = end_date_time
+    crid = splitted_filename[offset + 2]
+    ret_dict['crid'] = crid
+    accuracy = splitted_filename[offset + 3]
+    ret_dict['accuracy'] = accuracy
+
+    if product_type != 'RRSD':
+        coverage_char = splitted_filename[offset + 4]
+        if coverage_char == 'F':
+            coverage = 'Full'
+        elif coverage_char == 'P':
+            coverage = 'Partial'
+        else:
+            raise ValueError(
+                'Unrecognized coverage character'
+                f' "{coverage_char}" in filename: {filename}')
+        ret_dict['coverage_char'] = coverage_char
+        ret_dict['coverage'] = coverage
+        offset_loc_char = offset + 5
+    else:
+        offset_loc_char = offset + 4
+
+    location_char = splitted_filename[offset_loc_char]
+    if location_char == 'J':
+        location = 'JPL'
+    elif location_char == 'N':
+        location = 'NRSC'
+    else:
+        raise ValueError(
+            'Unrecognized location character'
+            f' "{location_char}" in filename: {filename}')
+    ret_dict['location_char'] = location_char
+    ret_dict['location'] = location
+
+    counter = splitted_filename[offset_loc_char + 1]
+    ret_dict['counter'] = counter
+
+    granule_id = '_'.join(splitted_filename[0: offset_loc_char + 2])
+    ret_dict['granule_id'] = granule_id
+
+    if len(splitted_filename) > offset_loc_char + 2:
+        for i in range(offset_loc_char + 2, len(splitted_filename)):
+            if splitted_filename[i] in ['HH', 'HV', 'VH', 'VV']:
+                ret_dict['polarization'] = splitted_filename[i]
+            if splitted_filename[i] in ['A', 'B']:
+                ret_dict['frequency'] = splitted_filename[i]
+
+    return ret_dict
 
 
 def get_raster_from_data(data, scratch_path='.'):
@@ -2335,7 +2711,7 @@ def execute(command,
 
     with sink:
 
-        if verbose:
+        if verbose and plant.plant_config.main_script is not None:
             arguments = plant.get_command_line_from_argv(argv)
             command_line = (f'{module_name}.py {arguments}')
             print(f'PLAnT-ISCE3 {plant_isce3.VERSION} (API) -'
@@ -2398,11 +2774,9 @@ def execute(command,
                        f' {ret.__class__.__name__}')
         else:
             ret_str = ''
-        if verbose:
-            print(f'PLAnT (API-completed) - {command_line}'
+        if verbose and plant.plant_config.main_script is not None:
+            print(f'PLAnT-ISCE3 (API-completed) - {command_line}'
                   f'{ret_str}')
-
-    plant.plant_config.current_script = current_script
 
     gc.collect()
     return ret
