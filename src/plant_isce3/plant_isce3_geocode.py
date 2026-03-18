@@ -67,12 +67,12 @@ def get_parser():
                         dest='flag_symmetrize',
                         help='Apply polarimetric symmetrization')
 
-    parser.add_argument(
-        '--symmetrize-bands',
-        dest='symmetrize_bands',
-        nargs=2,
-        type=int,
-        help='Bands (starting from 0) to symmetrize before geocoding.')
+    parser.add_argument('--symmetrize-bands',
+                        dest='symmetrize_bands',
+                        nargs=2,
+                        type=int,
+                        help=('Bands (starting from 0) to symmetrize before'
+                              ' geocoding.'))
 
     parser.add_argument('--list-of-polarizations',
                         dest='list_of_polarizations',

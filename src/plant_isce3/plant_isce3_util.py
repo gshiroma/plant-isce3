@@ -483,6 +483,12 @@ class PlantIsce3Util(plant_isce3.PlantIsce3Script):
     def run_nisar_as_input(self, plant_product_obj):
         nisar_product_obj = open_product(self.input_file)
 
+        if (self.masked_data_file and
+                nisar_product_obj.productType not in ['GCOV', 'GSLC']):
+            self.print('ERROR the option --masked-data is only available for'
+                       ' NISAR GCOV and GSLC products')
+            return
+
         if self.flag_all_layers or self.flag_all_secondary_layers:
             if nisar_product_obj.productType == 'STATIC':
                 self.nlooks_az, self.nlooks_rg = self.get_nlooks()
