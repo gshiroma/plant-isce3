@@ -11,6 +11,9 @@ import datetime
 import h5py
 import isce3
 
+import geopandas as gpd
+from shapely.geometry import Polygon
+
 from plant_isce3.readers import open_product
 
 POL_LIST = ['HH', 'HV', 'VH', 'VV', 'RH', 'RV', 'XX']
@@ -48,6 +51,7 @@ def get_parser():
     plant_isce3.add_arguments(parser,
                               burst_ids=1,
                               orbit_files=1,
+                              nlooks_by_frequency=1,
                               frequency=1)
 
     group = parser.add_mutually_exclusive_group()
@@ -152,6 +156,12 @@ def get_parser():
                        help=("Save a KML file containing the product's orbit"
                              " ephemeris"))
 
+    group.add_argument('--footprint-html',
+                       dest='footprint_html_file',
+                       action='store_true',
+                       help=("Save an HTML file containing the product's"
+                             " footprint"))
+
     group.add_argument('--slant-range',
                        '--slant-range-file',
                        dest='slant_range_file',
@@ -206,34 +216,6 @@ def get_parser():
                         type=str,
                         default='',
                         help="File prefix for option `--all-gcov-layers`")
-
-    parser.add_argument('--nlooks-x-freq-a',
-                        '--nlooks-x-a',
-                        type=int,
-                        help=('Number of looks in the X direction'
-                              ' for frequency A (when available)'),
-                        dest='nlooks_x_a')
-
-    parser.add_argument('--nlooks-y-freq-a',
-                        '--nlooks-y-a',
-                        type=int,
-                        help=('Number of looks in the X direction'
-                              ' for frequency A (when available)'),
-                        dest='nlooks_y_a')
-
-    parser.add_argument('--nlooks-x-freq-b',
-                        '--nlooks-x-b',
-                        type=int,
-                        help=('Number of looks in the X direction'
-                              ' for frequency B (when available)'),
-                        dest='nlooks_x_b')
-
-    parser.add_argument('--nlooks-y-freq-b',
-                        '--nlooks-y-b',
-                        type=int,
-                        help=('Number of looks in the X direction'
-                              ' for frequency B (when available)'),
-                        dest='nlooks_y_b')
 
     parser.add_argument('--square', '--sq',
                         action='store_true',
@@ -316,6 +298,7 @@ class PlantIsce3Util(plant_isce3.PlantIsce3Script):
                  self.swap_quad_pol or self.remove_pol or
                  self.runconfig_file or
                  self.orbit_kml_file or
+                 self.footprint_html_file or
                  (self.output_file and self.output_file.endswith('.h5')))):
             print('ERROR the option --separate-freq is'
                   ' not compatible with the options --copy-pol, --move-pol,'
@@ -347,7 +330,7 @@ class PlantIsce3Util(plant_isce3.PlantIsce3Script):
             if self.separate_freq:
                 freqs_iterator = freq_pols.items()
             else:
-                frequency = plant_product_obj.get_frequency_str()
+                frequency = plant_product_obj.get_frequency()
                 pols_iterator = freq_pols[frequency]
                 freqs_iterator = [[frequency, pols_iterator]]
 
@@ -453,6 +436,9 @@ class PlantIsce3Util(plant_isce3.PlantIsce3Script):
         if self.orbit_kml_file:
             self.save_orbit_kml(plant_product_obj)
 
+        elif self.footprint_html_file:
+            self.save_footprint_html(plant_product_obj)
+
         elif self.slant_range_file:
             self.save_slant_range_file(plant_product_obj)
 
@@ -497,6 +483,12 @@ class PlantIsce3Util(plant_isce3.PlantIsce3Script):
     def run_nisar_as_input(self, plant_product_obj):
         nisar_product_obj = open_product(self.input_file)
 
+        if (self.masked_data_file and
+                nisar_product_obj.productType not in ['GCOV', 'GSLC']):
+            self.print('ERROR the option --masked-data is only available for'
+                       ' NISAR GCOV and GSLC products')
+            return
+
         if self.flag_all_layers or self.flag_all_secondary_layers:
             if nisar_product_obj.productType == 'STATIC':
                 self.nlooks_az, self.nlooks_rg = self.get_nlooks()
@@ -536,6 +528,8 @@ class PlantIsce3Util(plant_isce3.PlantIsce3Script):
         if self.frequency is None:
             freq_pol_dict = nisar_product_obj.polarizations
             self.frequency = list(freq_pol_dict.keys())[0]
+            print('WARNING frequency not specified, using first'
+                  f' available frequency in the product: {self.frequency}')
         else:
             freq_pol_dict = {self.frequency:
                              nisar_product_obj.polarizations[self.frequency]}
@@ -1244,12 +1238,14 @@ class PlantIsce3Util(plant_isce3.PlantIsce3Script):
 
         if masked:
             image_ref = self.get_grids_ref(
-                'mask', nisar_product_obj, image_obj=None,
+                'mask', self.frequency, nisar_product_obj, image_obj=None,
                 valid_products=['GCOV', 'GSLC'])
 
             image_obj = self.read_image(image_ref, band=0)
 
             mask_array_obj = plant.filter_data(image_obj,
+                                               snap_to_multilook_grid=True,
+                                               null=255,
                                                nlooks=[self.nlooks_az,
                                                        self.nlooks_rg])
             del image_obj
@@ -1274,14 +1270,17 @@ class PlantIsce3Util(plant_isce3.PlantIsce3Script):
                   image_obj=None):
 
         image_ref = self.get_grids_ref(
-            'mask', nisar_product_obj, image_obj,
+            'mask', self.frequency, nisar_product_obj, image_obj,
             valid_products=['GCOV', 'GSLC'])
 
         image_obj = self.read_image(image_ref, band=0)
 
-        mask_array_obj = plant.filter_data(image_obj,
-                                           nlooks=[self.nlooks_az,
-                                                   self.nlooks_rg])
+        mask_array_obj = plant.filter_data(
+            image_obj,
+            snap_to_multilook_grid=True,
+            null=255,
+            nlooks_median=[self.nlooks_az,
+                           self.nlooks_rg])
         del image_obj
 
         mask_array_obj.image = np.asarray(mask_array_obj.image,
@@ -1299,7 +1298,7 @@ class PlantIsce3Util(plant_isce3.PlantIsce3Script):
                          image_obj=None):
 
         image_ref = self.get_grids_ref(
-            layer_name, nisar_product_obj, image_obj)
+            layer_name, self.frequency, nisar_product_obj, image_obj)
 
         if self.nlooks_az != 1 or self.nlooks_rg != 1:
 
@@ -1321,12 +1320,13 @@ class PlantIsce3Util(plant_isce3.PlantIsce3Script):
                                  image_obj=None):
 
         image_obj = self.get_grids_ref(
-            'layoverShadowMask', nisar_product_obj, image_obj)
+            'layoverShadowMask', self.frequency, nisar_product_obj, image_obj)
 
         if self.nlooks_az != 1 or self.nlooks_rg != 1:
 
             plant.filter(image_obj, output_file=self.output_file,
-                         nlooks=[self.nlooks_az, self.nlooks_rg],
+                         nlooks_median=[self.nlooks_az, self.nlooks_rg],
+                         null=255,
                          force=self.force)
 
         else:
@@ -1338,13 +1338,14 @@ class PlantIsce3Util(plant_isce3.PlantIsce3Script):
     def save_binary_water_mask(self, nisar_product_obj=None,
                                image_obj=None):
 
-        image_obj = self.get_grids_ref('waterMask', nisar_product_obj,
-                                       image_obj)
+        image_obj = self.get_grids_ref('waterMask', self.frequency,
+                                       nisar_product_obj, image_obj)
 
         if self.nlooks_az != 1 or self.nlooks_rg != 1:
 
             plant.filter(image_obj, output_file=self.output_file,
-                         nlooks=[self.nlooks_az, self.nlooks_rg],
+                         nlooks_median=[self.nlooks_az, self.nlooks_rg],
+                         null=255,
                          force=self.force)
 
         else:
@@ -1403,23 +1404,11 @@ class PlantIsce3Util(plant_isce3.PlantIsce3Script):
 
         if plant_product_obj.sensor_name == 'NISAR':
 
-            h5_obj = plant.h5py_file_wrapper(self.input_file, 'r')
-
             flag_has_polygon = True
-            polygon_dataset = '//science/LSAR/identification/boundingPolygon'
-            polygon_str = str(h5_obj[polygon_dataset][()].decode('utf-8'))
-            h5_obj.close()
-            polygon_str = polygon_str.replace('POLYGON', '')
-            polygon_str_ref = ''
-            while polygon_str_ref != polygon_str:
-                polygon_str_ref = polygon_str
-                polygon_str = polygon_str.replace('(', '')
-            polygon_str_ref = ''
-            while polygon_str_ref != polygon_str:
-                polygon_str_ref = polygon_str
-                polygon_str = polygon_str.replace(')', '')
-            polygon = polygon_str.split(',')
-            polygon = [p.strip().split(' ') for p in polygon]
+
+            with plant.h5py_file_wrapper(self.input_file, 'r') as h5_obj:
+                polygon = plant_isce3.get_nisar_product_bounding_polygon(
+                    h5_obj, flag_as_list=True)
 
         ellipsoid = isce3.core.Ellipsoid()
         time_list = []
@@ -1508,6 +1497,31 @@ class PlantIsce3Util(plant_isce3.PlantIsce3Script):
         fp.write('      </outerBoundaryIs>\n')
         fp.write('    </Polygon>\n')
         fp.write('  </Placemark>\n')
+
+    def save_footprint_html(self, plant_product_obj):
+
+        if plant_product_obj.sensor_name != 'NISAR':
+            print('ERROR footprint HTML file can only be saved for NISAR'
+                  ' products.')
+            return
+
+        with plant.h5py_file_wrapper(self.input_file, 'r') as h5_obj:
+            coords = plant_isce3.get_nisar_product_bounding_polygon(
+                h5_obj, flag_as_list=True)
+
+        polygon = Polygon(coords)
+
+        gdf = gpd.GeoDataFrame(
+            {"name": ["My Polygon"]},
+            geometry=[polygon],
+            crs="EPSG:4326"
+        )
+
+        m = gdf.explore()
+        m.save(self.output_file)
+
+        if plant.isfile(self.output_file) and self.verbose:
+            print(f'## file saved: {self.output_file}')
 
     def add_line(self, fp, state_vectors_pos, state_vectors_vel,
                  time_list,

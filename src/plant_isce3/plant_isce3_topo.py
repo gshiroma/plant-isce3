@@ -153,16 +153,16 @@ class PlantIsce3Topo(plant_isce3.PlantIsce3Script):
                                       doppler=doppler,
                                       **topo_kwargs)
 
-        flag_all = (self.flag_x is not True and
-                    self.flag_y is not True and
-                    self.flag_z is not True and
-                    self.flag_incidence_angle is not True and
-                    self.flag_heading_angle is not True and
-                    self.flag_local_incidence_angle is not True and
-                    self.flag_projection_angle is not True and
-                    self.flag_simulated_amplitude is not True and
-                    self.flag_layover_shadow_mask is not True and
-                    self.flag_los is not True)
+        flag_all = not any([self.flag_x,
+                            self.flag_y,
+                            self.flag_z,
+                            self.flag_incidence_angle,
+                            self.flag_heading_angle,
+                            self.flag_local_incidence_angle,
+                            self.flag_projection_angle,
+                            self.flag_simulated_amplitude,
+                            self.flag_layover_shadow_mask,
+                            self.flag_los])
 
         if self.output_dir and not os.path.isdir(self.output_dir):
             os.makedirs(self.output_dir)
@@ -170,7 +170,8 @@ class PlantIsce3Topo(plant_isce3.PlantIsce3Script):
         if flag_all:
             print('*** create all layers')
             topo.topo(dem_raster, self.output_dir)
-
+            output_obj_list = glob.glob(os.path.join(self.output_dir,
+                                                     '*.rdr'))
         else:
             output_obj_list = []
 
@@ -238,14 +239,6 @@ class PlantIsce3Topo(plant_isce3.PlantIsce3Script):
                 ground_to_sat_east_raster=los_east_raster,
                 ground_to_sat_north_raster=los_north_raster)
 
-        if self.output_dir and not os.path.isdir(self.output_dir):
-            os.makedirs(self.output_dir)
-
-        topo.topo(dem_raster, self.output_dir)
-
-        if flag_all:
-            output_obj_list = glob.glob(os.path.join(self.output_dir,
-                                                     '*.rdr'))
         for output_file in output_obj_list:
             plant.append_output_file(output_file)
 

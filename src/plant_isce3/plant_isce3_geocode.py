@@ -67,12 +67,12 @@ def get_parser():
                         dest='flag_symmetrize',
                         help='Apply polarimetric symmetrization')
 
-    parser.add_argument(
-        '--symmetrize-bands',
-        dest='symmetrize_bands',
-        nargs=2,
-        type=int,
-        help='Bands (starting from 0) to symmetrize before geocoding.')
+    parser.add_argument('--symmetrize-bands',
+                        dest='symmetrize_bands',
+                        nargs=2,
+                        type=int,
+                        help=('Bands (starting from 0) to symmetrize before'
+                              ' geocoding.'))
 
     parser.add_argument('--list-of-polarizations',
                         dest='list_of_polarizations',
@@ -387,7 +387,7 @@ class PlantIsce3Geocode(plant_isce3.PlantIsce3Script):
 
         if self.tec_file:
 
-            frequency_str = plant_product_obj.get_frequency_str()
+            frequency_str = plant_product_obj.get_frequency()
 
             slc_obj = SLC(hdf5file=self.input_file)
             center_freq = slc_obj.getSwathMetadata(
