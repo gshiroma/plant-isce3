@@ -330,7 +330,7 @@ class PlantIsce3Util(plant_isce3.PlantIsce3Script):
             if self.separate_freq:
                 freqs_iterator = freq_pols.items()
             else:
-                frequency = plant_product_obj.get_frequency_str()
+                frequency = plant_product_obj.get_frequency()
                 pols_iterator = freq_pols[frequency]
                 freqs_iterator = [[frequency, pols_iterator]]
 

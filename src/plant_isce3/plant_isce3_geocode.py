@@ -387,7 +387,7 @@ class PlantIsce3Geocode(plant_isce3.PlantIsce3Script):
 
         if self.tec_file:
 
-            frequency_str = plant_product_obj.get_frequency_str()
+            frequency_str = plant_product_obj.get_frequency()
 
             slc_obj = SLC(hdf5file=self.input_file)
             center_freq = slc_obj.getSwathMetadata(

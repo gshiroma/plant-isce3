@@ -8,6 +8,7 @@ import isce3
 import boto3
 from ..protocols import ProductReader
 import plant
+import numpy as np
 
 
 def _get_driver_kwds():
@@ -237,7 +238,87 @@ class Base(pyre.component,
         '''
         if frequency is None:
             frequency = self._getFirstFrequency()
-        return isce3.product.RadarGridParameters(self.filename, frequency)
+
+        try:
+
+            return isce3.product.RadarGridParameters(self.filename, frequency)
+
+        except Exception as e:
+            print('WARNING failed to read radar grid from ISCE3,'
+                  ' attempting to construct object using h5py')
+            print(f'Error details: {e}')
+
+        print(f'Reading radar grid metadata for frequency {frequency}'
+              ' from HDF5 file using h5py')
+
+        with open_h5_file(self.filename, 'r', libver='latest',
+                          swmr=True) as fid:
+
+            with plant.PlantIndent():
+                swath_group = fid[self.SwathPath]
+                frequency_group = swath_group[f'frequency{frequency}']
+
+                zero_doppler_time = swath_group['zeroDopplerTime'][()]
+
+                print('zero_doppler_time:', zero_doppler_time)
+                sensing_start = zero_doppler_time[0]
+                print('sensing_start:', sensing_start)
+                pri = np.nanmean(zero_doppler_time[1:] - zero_doppler_time[:-1])
+                print('PRI:', pri)
+                print('PRF:', 1.0 / pri)
+
+                slant_range = frequency_group['slantRange'][()]
+                print('slant_range:', slant_range)
+                starting_range = slant_range[0]
+                print('starting_range:', starting_range)
+                rg_spacing = np.nanmean(slant_range[1:] - slant_range[:-1])
+                print('range spacing:', rg_spacing)
+                length = zero_doppler_time.size
+                print('length:', length)
+                width = slant_range.size
+                print('width:', width)
+
+                lookside_str = fid[f'{self.IdentificationPath}/lookDirection'][()]
+                if isinstance(lookside_str, bytes):
+                    lookside_str = lookside_str.decode()
+
+                print('lookside_str:', lookside_str)
+                lookside = isce3.core.normalize_look_side(lookside_str.lower())
+
+                processed_center_frequency = frequency_group[
+                    'processedCenterFrequency'][()]
+                print('processed_center_frequency:',
+                      processed_center_frequency)
+                wavelength = (isce3.core.speed_of_light /
+                              processed_center_frequency)
+                print('wavelength:', wavelength)
+
+                ref_epoch_str = swath_group['zeroDopplerTime'].attrs['units']
+                if isinstance(ref_epoch_str, bytes):
+                    ref_epoch_str = ref_epoch_str.decode()
+                print('ref_epoch_str:', ref_epoch_str)
+                if not ref_epoch_str.startswith('seconds since '):
+                    raise ValueError("Unexpected time units format:"
+                                     f" {ref_epoch_str}")
+                ref_epoch_str = ref_epoch_str[len('seconds since '):]
+                print('ref_epoch_str after stripping prefix:', ref_epoch_str)
+                # datetime_format = '%Y-%m-%dT%H:%M:%S.%fZ'  # Adjust if needed
+                ref_epoch = isce3.core.DateTime(ref_epoch_str)
+                print('ref_epoch:', ref_epoch)
+
+                output_radar_grid = isce3.product.RadarGridParameters(
+                        sensing_start,
+                        wavelength,
+                        1.0 / pri,
+                        starting_range,
+                        rg_spacing,
+                        lookside,
+                        length,
+                        width,
+                        ref_epoch)
+
+        return output_radar_grid
+
 
     @pyre.export
     def getGridMetadata(self, frequency=None):

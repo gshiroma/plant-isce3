@@ -1,15 +1,12 @@
 #!/usr/bin/env python3
 
 import os
-
 from zipfile import ZipFile
 import time
 import plant
 import plant_isce3
 import subprocess
-
 import numpy as np
-import isce3
 from osgeo import gdal, ogr, osr
 
 import h5py
@@ -18,8 +15,6 @@ import glob
 import pickle
 
 from plant_isce3.readers.product import open_product
-
-MAX_PARALLEL_PROCESSES = 8
 
 res_deg_dict = {'A': 1.0 / 3600,
                 'B': 1.0 / 3600}
@@ -37,6 +32,7 @@ def get_parser():
                             dem_file=1,
                             geo=1,
 
+                            aws_credentials=1,
                             default_output_options=1,
                             output_skip_if_existent=1,
                             default_flags=1,
@@ -184,6 +180,17 @@ def get_parser():
                         dest='step_2_off_diagonal_analysis',
                         help='Perform off-diagonal analysis')
 
+    parser.add_argument('--worldcover',
+                        '--worldcover-file',
+                        dest='worldcover',
+                        type=str,
+                        help='WorldCover land cover map for EAP analysis')
+
+    parser.add_argument('--step-2-eap-analysis',
+                        action='store_true',
+                        dest='step_2_eap_analysis',
+                        help='Perform EAP analysis')
+
     parser.add_argument('--full-covariance',
                         '--fullcovariance',
                         dest='full_covariance',
@@ -201,16 +208,30 @@ def get_parser():
                         dest='plot_dataset_name',
                         help='Dataset name to include in plot titles')
 
+    parser.add_argument('--n-parallel-processes',
+                        type=int,
+                        default=8,
+                        dest='n_parallel_processes',
+                        help=('Maximum number of parallel processes (if'
+                              ' applicable)'))
+
     parser.add_argument('--step-2-generate-cog',
                         action='store_true',
                         dest='step_2_generate_cog',
                         help='Generate Cloud-Optimized GeoTIFFs (COGs)')
 
-    parser.add_argument(
-        '--step-2-generate-cog-parallel',
-        action='store_true',
-        dest='step_2_generate_cog_parallel',
-        help='Generate Cloud-Optimized GeoTIFFs (COGs) in parallel')
+    parser.add_argument('--step-2-generate-cog-parallel',
+                        action='store_true',
+                        dest='step_2_generate_cog_parallel',
+                        help=('Generate Cloud-Optimized GeoTIFFs (COGs) in'
+                              ' parallel'))
+
+    parser.add_argument('--plant-isce3-util-path',
+                        type=str,
+                        default='plant_isce3_util.py',
+                        dest='plant_isce3_util_path',
+                        help=('Path to plant_isce3_util.py script'
+                              ' (for parallel processing)'))
 
     parser.add_argument('--step-2-generate-cog-rgb',
                         action='store_true',
@@ -249,6 +270,13 @@ def get_parser():
                         action='store_true',
                         dest='step_4_generate_tiles_parallel',
                         help='Generate mosaic tiles in parallel')
+
+    parser.add_argument('--plant-mosaic-path',
+                        type=str,
+                        default='plant_mosaic.py',
+                        dest='plant_mosaic_path',
+                        help=('Path to plant_mosaic.py script'
+                              ' (for parallel processing)'))
 
     parser.add_argument('--step-4-generate-tiles-kmz',
                         action='store_true',
@@ -357,6 +385,25 @@ class PlantIsce3BatchProcessing(plant_isce3.PlantIsce3Script):
 
     def run(self):
 
+        if (self.step_2_generate_cog_parallel and
+                not self.plant_isce3_util_path):
+            self.print('ERROR: --plant-isce3-util-path is required for'
+                       ' --step-2-generate-cog-parallel')
+            return
+
+        if (self.step_4_generate_tiles_parallel and
+                not self.plant_mosaic_path):
+            self.print('ERROR: --plant-mosaic-path is required for'
+                       ' --step-4-generate-tiles-parallel')
+            return
+
+        if (not self.dem_file and
+            (self.step_2_generate_gcov_runconfig or self.step_2_generate_kmz or
+             self.step_2_eap_analysis)):
+            self.print('ERROR: --dem-file is required for the selected'
+                       ' processing steps')
+            return
+
         if self.replace_l0b_with:
             self.print(f'input file (original): {self.input_file}')
             self.print(f'replace L0B with: {self.replace_l0b_with}')
@@ -440,17 +487,33 @@ class PlantIsce3BatchProcessing(plant_isce3.PlantIsce3Script):
              f'bbox_by_epsg{self.output_files_suffix}.pkl')
 
         if self.skip_step_1_and_load_cogs_from:
-            search_pattern = os.path.join(
-                self.skip_step_1_and_load_cogs_from, '**', '*.tif')
-            file_list = glob.glob(search_pattern,
-                                  recursive=True)
+
+            print('Step 1: loading COG files from directory:'
+                  f' {self.skip_step_1_and_load_cogs_from}')
+
+            search_pattern = self.skip_step_1_and_load_cogs_from
+
+            file_list = glob.glob(search_pattern, recursive=True)
+
+            if len(file_list) == 0:
+
+                search_pattern = os.path.join(
+                    self.skip_step_1_and_load_cogs_from, '**', '*.tif')
+
+            if len(file_list) == 0:
+                print('ERROR no COG files found with pattern:',
+                      self.skip_step_1_and_load_cogs_from)
+                return
 
             frequency_epsg_dict = {}
 
             n_files = len(file_list)
 
-            print('Step 1: loading COG files from directory:'
-                  f' {self.skip_step_1_and_load_cogs_from}')
+            cycle_list = []
+            track_frame_list = []
+            products_list = []
+            products_pol_dict = {}
+            pol_modes_dict = {}
 
             for i, tif_file in enumerate(file_list):
                 plant.print_progress(i, n_files)
@@ -569,8 +632,6 @@ class PlantIsce3BatchProcessing(plant_isce3.PlantIsce3Script):
                               ' selection bbox. Skipping.')
                         continue
 
-                if self.bbox:
-
                     bbox_min_lat, bbox_max_lat, bbox_min_lon, bbox_max_lon = \
                         self.bbox
                     self.print('***        selection bbox:')
@@ -584,15 +645,13 @@ class PlantIsce3BatchProcessing(plant_isce3.PlantIsce3Script):
                         self.print('***             bbox_max_lon:'
                                    f' {bbox_max_lon}')
 
-                if not outer_polygon_ogr.Intersects(bounding_polygon):
-                    print(
-                        '***    Product does not intersect with the selection bbox.'
-                        ''
-                        ' Skipping.')
-                    continue
+                    if not outer_polygon_ogr.Intersects(bounding_polygon):
+                        print('***    Product does not intersect with the'
+                              ' selection bbox. Skipping.')
+                        continue
 
-                update_tiles_map_dict(tiles_map_by_epsg, bbox_by_epsg,
-                                      bounding_polygon, epsg)
+                self.update_tiles_map_dict(tiles_map_by_epsg, bbox_by_epsg,
+                                           bounding_polygon, epsg)
 
                 if frequency not in frequency_epsg_dict.keys():
                     frequency_epsg_dict[frequency] = {
@@ -608,6 +667,63 @@ class PlantIsce3BatchProcessing(plant_isce3.PlantIsce3Script):
                 else:
                     frequency_epsg_dict[frequency][pol][epsg].append(
                         tif_file)
+
+                if dict_filename is not None:
+                    cycle_number = None
+                    track_frame = None
+                    if 'cycle_number' in dict_filename.keys():
+                        cycle_number = dict_filename['cycle_number']
+                        if cycle_number not in cycle_list:
+                            cycle_list.append(cycle_number)
+                    if ('track_number' in dict_filename.keys() and
+                            'frame_number' in dict_filename.keys()):
+                        track_frame = (f"{dict_filename['track_number']}_"
+                                       f"{dict_filename['frame_number']}")
+                        if track_frame not in track_frame_list:
+                            track_frame_list.append(track_frame)
+                    if cycle_number is not None or track_frame is not None:
+                        cycle_track_frame_str = f"{cycle_number}_{track_frame}"
+                        if cycle_track_frame_str not in products_list:
+                            products_list.append(cycle_track_frame_str)
+                        if pol not in products_pol_dict:
+                            products_pol_dict[pol] = []
+                        if cycle_track_frame_str not in products_pol_dict[pol]:
+                            products_pol_dict[pol].append(
+                                cycle_track_frame_str)
+                        pol_mode_a = dict_filename.get('pol_freq_a', None)
+                        if pol_mode_a is not None:
+                            if pol_mode_a not in pol_modes_dict:
+                                pol_modes_dict[pol_mode_a] = []
+                            if cycle_track_frame_str not in \
+                                    pol_modes_dict[pol_mode_a]:
+                                pol_modes_dict[pol_mode_a].append(
+                                    cycle_track_frame_str)
+                        pol_mode_b = dict_filename.get('pol_freq_b', None)
+                        if pol_mode_b is not None:
+                            if pol_mode_b not in pol_modes_dict:
+                                pol_modes_dict[pol_mode_b] = []
+                            if cycle_track_frame_str not in \
+                                    pol_modes_dict[pol_mode_b]:
+                                pol_modes_dict[pol_mode_b].append(
+                                    cycle_track_frame_str)
+
+            print('list of products (cycle_track_frame):', products_list)
+            print('list of track-frames:', track_frame_list)
+            print('list of cycles:', cycle_list)
+            print('list of pol modes:', pol_modes_dict)
+            print('')
+            print('number of products (cycle_track_frame):',
+                  len(products_list))
+            for pol_mode, product_list in pol_modes_dict.items():
+                print(f'number of products for polarization mode {pol_mode}:'
+                      f' {len(product_list)}')
+            print('')
+            for pol, product_list in products_pol_dict.items():
+                print(f'number of products for polarization {pol}:'
+                      f' {len(product_list)}')
+            print('')
+            print('number of track-frames:', len(track_frame_list))
+            print('number of cycles:', len(cycle_list))
 
         elif self.step_1_load_pickle_files:
             with plant.PlantIndent():
@@ -732,6 +848,7 @@ class PlantIsce3BatchProcessing(plant_isce3.PlantIsce3Script):
                             os.remove(vrt_file)
 
                         gdal.BuildVRT(vrt_file, file_list, srcNodata='nan',
+                                      resampleAlg='average',
                                       VRTNodata='nan')
                         print('        file saved:', vrt_file)
                         add_overviews_vrt(vrt_file)
@@ -952,7 +1069,8 @@ class PlantIsce3BatchProcessing(plant_isce3.PlantIsce3Script):
         mosaic_kmz_file_list = []
 
         if flag_s3_bucket:
-            creds = plant_isce3.load_aws_credentials('saml-pub')
+
+            creds = plant.load_aws_credentials()
 
             resource = boto3.resource('s3', **creds)
 
@@ -1259,6 +1377,8 @@ class PlantIsce3BatchProcessing(plant_isce3.PlantIsce3Script):
 
                     if epsg is not None:
                         epsg_str = f'<p><b>EPSG code:</b> {epsg}</p>'
+                    else:
+                        epsg_str = ''
 
                     kml_placemark_str = f'''  <Placemark>
       <name></name>
@@ -1309,8 +1429,8 @@ class PlantIsce3BatchProcessing(plant_isce3.PlantIsce3Script):
             h5_obj.close()
             del h5_obj
 
-            update_tiles_map_dict(tiles_map_by_epsg, bbox_by_epsg,
-                                  bounding_polygon, epsg)
+            self.update_tiles_map_dict(tiles_map_by_epsg, bbox_by_epsg,
+                                       bounding_polygon, epsg)
 
             output_dir = self.step_2_directory
 
@@ -1454,10 +1574,11 @@ class PlantIsce3BatchProcessing(plant_isce3.PlantIsce3Script):
         h5_obj.copy(identification_path, hdf5_out_obj,
                     name=identification_path)
 
-        print('*** copying sourceData parameters group')
-        hdf5_out_obj.require_group(source_data_processing_information_path)
-        h5_obj.copy(source_data_parameters_path, hdf5_out_obj,
-                    name=source_data_parameters_path)
+        if current_file_product_type in ['GCOV', 'GSLC']:
+            print('*** copying sourceData parameters group')
+            hdf5_out_obj.require_group(source_data_processing_information_path)
+            h5_obj.copy(source_data_parameters_path, hdf5_out_obj,
+                        name=source_data_parameters_path)
 
         print('*** requiring metadata group')
         hdf5_out_obj.require_group(processing_information_path)
@@ -1470,7 +1591,9 @@ class PlantIsce3BatchProcessing(plant_isce3.PlantIsce3Script):
         hdf5_out_obj.require_group(parameters_path)
         h5_obj.copy(runconfig_path, hdf5_out_obj, name=runconfig_path)
 
-        print('*** done copying global attributes, identification and metadata groups')
+        print('*** done copying global attributes, identification and metadata'
+              ' groups')
+
         list_of_frequencies_path = \
             (f'/science/{instrument_name}/'
              f'identification/listOfFrequencies')
@@ -1478,16 +1601,23 @@ class PlantIsce3BatchProcessing(plant_isce3.PlantIsce3Script):
         print('*** list_of_frequencies:', list_of_frequencies)
         first_frequency = list_of_frequencies[0].decode()
         print(f'*** first_frequency: {first_frequency}')
-        first_frequency_path = \
-            (f'/science/LSAR/{current_file_product_type}/grids/'
-             f'frequency{first_frequency}')
 
-        projection_path = f'{first_frequency_path}/projection'
+        if current_file_product_type.startswith('G'):
+            first_frequency_path = \
+                (f'/science/LSAR/{current_file_product_type}/grids/'
+                 f'frequency{first_frequency}')
+        else:
+            first_frequency_path = \
+                (f'/science/LSAR/{current_file_product_type}/swaths/'
+                 f'frequency{first_frequency}')
 
-        print('*** copying projection group')
-        hdf5_out_obj.require_group(first_frequency_path)
-        h5_obj.copy(projection_path, hdf5_out_obj,
-                    name=projection_path)
+        if current_file_product_type.startswith('G'):
+            projection_path = f'{first_frequency_path}/projection'
+
+            print('*** copying projection group')
+            hdf5_out_obj.require_group(first_frequency_path)
+            h5_obj.copy(projection_path, hdf5_out_obj,
+                        name=projection_path)
 
         list_of_polarizations_path = \
             f'{first_frequency_path}/listOfPolarizations'
@@ -1509,8 +1639,10 @@ class PlantIsce3BatchProcessing(plant_isce3.PlantIsce3Script):
         nlooks_y, nlooks_x = self.get_nlooks(frequency=frequency)
 
         if nlooks_y != 1 or nlooks_x != 1:
-            suffix = (f'_{frequency}_ml_{nlooks_y}_{nlooks_x}')
+            suffix_ml = f'_ml_{nlooks_y}_{nlooks_x}'
+            suffix = (f'_{frequency}{suffix_ml}')
         else:
+            suffix_ml = ''
             suffix = f'_{frequency}'
 
         output_file = os.path.join(output_dir, basename + suffix + '.tif')
@@ -1525,12 +1657,65 @@ class PlantIsce3BatchProcessing(plant_isce3.PlantIsce3Script):
             if self.plot_date:
                 kwargs_off_diag_analysis['plot_date'] = self.plot_date
 
+            output_dir_off_diag_analysis = os.path.join(
+                '2_off_diag_analysis', basename + suffix)
+
             plant_isce3.off_diagonal_analysis(
-                downloaded_file, output_dir=basename, frequency=frequency,
+                downloaded_file,
+                output_dir=output_dir_off_diag_analysis,
+                frequency=frequency,
                 output_skip_if_existent=self.output_skip_if_existent,
                 force=True,
                 nlooks_x=nlooks_x, nlooks_y=nlooks_y,
+
                 **kwargs_off_diag_analysis)
+
+        if self.step_2_eap_analysis:
+            flag_success_eap_analysis = False
+            error_count = 0
+            while not flag_success_eap_analysis and error_count < 3:
+                try:
+                    eap_kwargs = {}
+                    if self.worldcover:
+                        eap_kwargs['worldcover'] = self.worldcover
+                    output_dir_eap = os.path.join(
+                        '2_eap_analysis', basename + suffix_ml)
+                    plant_isce3.rslc_eap_analysis(
+                        downloaded_file,
+                        frequency=frequency,
+                        profiles_directory=output_dir_eap,
+                        output_file='""',
+                        dem=self.dem_file,
+                        output_skip_if_existent=self.output_skip_if_existent,
+                        force=True,
+                        ignore_noise=True,
+                        png_prefix=basename + "_",
+
+                        generate_elevation_profiles=True,
+                        load_processed_backscatter_image=True,
+                        save_multilooked_backscatter_image=True,
+                        save_processed_backscatter_image=True,
+                        save_multilooked_backscatter_png=True,
+                        save_processed_backscatter_png=True,
+                        save_profile_plot_png=True,
+                        nlooks_x=nlooks_x,
+                        nlooks_y=nlooks_y,
+                        **eap_kwargs)
+                    flag_success_eap_analysis = True
+                except Exception as e:
+                    error_count += 1
+                    print('==================================================')
+                    print('==================================================')
+                    print('==================================================')
+                    print('WARNING: There was an error during the EAP'
+                          ' analysis. Error details:', str(e).replace('ERROR:',
+                                                                      ''))
+                    print('==================================================')
+                    print('==================================================')
+                    print('==================================================')
+            if not flag_success_eap_analysis:
+                print('ERROR: The EAP analysis did not complete successfully'
+                      ' after 3 attempts. Skipping.')
 
         masked_data_kwargs = {
             'masked_data_file': self.masked_data_file,
@@ -1581,7 +1766,8 @@ class PlantIsce3BatchProcessing(plant_isce3.PlantIsce3Script):
 
                 input_ref = f'NISAR:{downloaded_file}:{frequency}'
                 command = \
-                    (f'python3 /scratch/shiroma/dev/plant-isce3/plant-isce3_all/src/plant_isce3/plant_isce3_util.py {input_ref} --nlooks-x {nlooks_x}'
+                    (f'python3 {self.plant_isce3_util_path} {input_ref}'
+                     f' --nlooks-x {nlooks_x}'
                      f' --nlooks-y {nlooks_y} --output-file {output_file_pol}'
                      f' --force --band {band} {masked_data_kwargs_str}'
                      f' {kwargs_product_data_to_backscatter_str}')
@@ -1714,6 +1900,14 @@ class PlantIsce3BatchProcessing(plant_isce3.PlantIsce3Script):
         min_lon = int(np.floor(min_lon))
         max_lon = int(np.ceil(max_lon))
 
+        if self.bbox:
+            bbox_min_lat, bbox_max_lat, bbox_min_lon, bbox_max_lon = \
+                self.bbox
+            min_lat = max(min_lat, int(np.floor(bbox_min_lat)))
+            max_lat = min(max_lat, int(np.ceil(bbox_max_lat)))
+            min_lon = max(min_lon, int(np.floor(bbox_min_lon)))
+            max_lon = min(max_lon, int(np.ceil(bbox_max_lon)))
+
         print('Extents:')
         print('    min lon:', min_lon)
         print('    max lon:', max_lon)
@@ -1756,17 +1950,17 @@ class PlantIsce3BatchProcessing(plant_isce3.PlantIsce3Script):
 
                 if flag_generate_tiles_parallel:
                     command = \
-                        (f'python3 /scratch/shiroma/dev/plant/plant/src/plant/app/plant_mosaic.py'
+                        (f'python3 {self.plant_mosaic_path}'
                          f' {" ".join(list_of_epsg_vrts)}'
                          f' --output-file {tile_file}'
                          f' --bbox {lat} {lat + 1} {lon} {lon + 1}'
                          f' --step-x {step_x} --step-y {step_y}'
                          f' --force --in-null nan --out-null nan'
-                         f' --of "{cog_str}"'
+                         f' --of "{cog_str}" --log-enabled'
                          f' --interp average --out-projection wgs84')
                     p = subprocess.Popen(command, shell=True)
                     processes.append((p, tile_file))
-                    while len(processes) >= MAX_PARALLEL_PROCESSES:
+                    while len(processes) >= self.n_parallel_processes:
                         for p, tile_file in processes[:]:
                             if p.poll() is None:
                                 continue
@@ -1895,6 +2089,7 @@ class PlantIsce3BatchProcessing(plant_isce3.PlantIsce3Script):
                 os.remove(vrt_file)
             gdal.BuildVRT(vrt_file, file_list, srcNodata='nan',
                           VRTNodata='nan',
+                          resampleAlg='average',
                           outputBounds=[min_lon, min_lat, max_lon, max_lat])
 
             print('        file saved:', vrt_file)
@@ -1916,6 +2111,74 @@ class PlantIsce3BatchProcessing(plant_isce3.PlantIsce3Script):
                                  lon_index_beg:lon_index_end].any()
 
         return flag_process
+
+    def update_tiles_map_dict(self, tiles_map_by_epsg,
+                              bbox_by_epsg, polygon_geometry, epsg):
+        if epsg not in tiles_map_by_epsg.keys():
+
+            epsg_tiles_map = np.zeros((180, 360), dtype=np.byte)
+            epsg_min_lat = +90
+            epsg_max_lat = -90
+            epsg_min_lon = +180
+            epsg_max_lon = -180
+        else:
+
+            epsg_tiles_map = tiles_map_by_epsg[epsg]
+            epsg_min_lon, epsg_max_lon, epsg_min_lat, epsg_max_lat = \
+                bbox_by_epsg[epsg]
+
+        min_lon, max_lon, min_lat, max_lat = polygon_geometry.GetEnvelope()
+        print('***    min_lon, max_lon, min_lat, max_lat:',
+              min_lon, max_lon, min_lat, max_lat)
+
+        epsg_min_lon = min([epsg_min_lon, min_lon])
+        epsg_max_lon = max([epsg_max_lon, max_lon])
+        epsg_min_lat = min([epsg_min_lat, min_lat])
+        epsg_max_lat = max([epsg_max_lat, max_lat])
+
+        lat_index_beg = 180 - (int(np.ceil(max_lat)) + 90)
+        lat_index_end = 180 - (int(np.floor(min_lat)) + 90) + 1
+        lon_index_beg = int(np.floor(min_lon)) + 180
+        lon_index_end = int(np.ceil(max_lon)) + 180 + 1
+        epsg_tiles_map[lat_index_beg:lat_index_end,
+                       lon_index_beg:lon_index_end] = 1
+
+        tiles_map_by_epsg[epsg] = epsg_tiles_map
+        bbox_by_epsg[epsg] = \
+            epsg_min_lon, epsg_max_lon, epsg_min_lat, epsg_max_lat
+
+        if 'mosaic' in tiles_map_by_epsg.keys():
+            mosaic_tiles_map = tiles_map_by_epsg['mosaic']
+        else:
+            mosaic_tiles_map = np.zeros((180, 360), dtype=np.uint16)
+
+        mosaic_tiles_map = mosaic_tiles_map + tiles_map_by_epsg[epsg]
+        tiles_map_by_epsg['mosaic'] = mosaic_tiles_map
+
+        if 'mosaic' in bbox_by_epsg.keys():
+            mosaic_min_lon, mosaic_max_lon, mosaic_min_lat, mosaic_max_lat = \
+                bbox_by_epsg['mosaic']
+        else:
+            mosaic_min_lat = +90
+            mosaic_max_lat = -90
+            mosaic_min_lon = +180
+            mosaic_max_lon = -180
+
+        mosaic_min_lon = min([mosaic_min_lon, epsg_min_lon])
+        mosaic_max_lon = max([mosaic_max_lon, epsg_max_lon])
+        mosaic_min_lat = min([mosaic_min_lat, epsg_min_lat])
+        mosaic_max_lat = max([mosaic_max_lat, epsg_max_lat])
+
+        if self.bbox:
+            bbox_min_lat, bbox_max_lat, bbox_min_lon, bbox_max_lon = \
+                self.bbox
+            mosaic_min_lat = max(mosaic_min_lat, int(np.floor(bbox_min_lat)))
+            mosaic_max_lat = min(mosaic_max_lat, int(np.ceil(bbox_max_lat)))
+            mosaic_min_lon = max(mosaic_min_lon, int(np.floor(bbox_min_lon)))
+            mosaic_max_lon = min(mosaic_max_lon, int(np.ceil(bbox_max_lon)))
+
+        bbox_by_epsg['mosaic'] = \
+            mosaic_min_lon, mosaic_max_lon, mosaic_min_lat, mosaic_max_lat
 
 
 def substitute_in_file(filename, output_file, old_substring_list,
@@ -2028,66 +2291,6 @@ def add_overviews_tif(tif_file):
 
                f' {tif_file} 2 4 8 16 32 64 128')
     plant.execute(command)
-
-
-def update_tiles_map_dict(tiles_map_by_epsg,
-                          bbox_by_epsg, polygon_geometry, epsg):
-    if epsg not in tiles_map_by_epsg.keys():
-
-        epsg_tiles_map = np.zeros((180, 360), dtype=np.byte)
-        epsg_min_lat = +90
-        epsg_max_lat = -90
-        epsg_min_lon = +180
-        epsg_max_lon = -180
-    else:
-
-        epsg_tiles_map = tiles_map_by_epsg[epsg]
-        epsg_min_lon, epsg_max_lon, epsg_min_lat, epsg_max_lat = \
-            bbox_by_epsg[epsg]
-
-    (min_lon, max_lon, min_lat, max_lat) = polygon_geometry.GetEnvelope()
-    print('***    min_lon, max_lon, min_lat, max_lat:',
-          min_lon, max_lon, min_lat, max_lat)
-
-    epsg_min_lon = min([epsg_min_lon, min_lon])
-    epsg_max_lon = max([epsg_max_lon, max_lon])
-    epsg_min_lat = min([epsg_min_lat, min_lat])
-    epsg_max_lat = max([epsg_max_lat, max_lat])
-
-    lat_index_beg = 180 - (int(np.ceil(max_lat)) + 90)
-    lat_index_end = 180 - (int(np.floor(min_lat)) + 90) + 1
-    lon_index_beg = int(np.floor(min_lon)) + 180
-    lon_index_end = int(np.ceil(max_lon)) + 180 + 1
-    epsg_tiles_map[lat_index_beg:lat_index_end,
-                   lon_index_beg:lon_index_end] = 1
-
-    tiles_map_by_epsg[epsg] = epsg_tiles_map
-    bbox_by_epsg[epsg] = epsg_min_lon, epsg_max_lon, epsg_min_lat, epsg_max_lat
-
-    if 'mosaic' in tiles_map_by_epsg.keys():
-        mosaic_tiles_map = tiles_map_by_epsg['mosaic']
-    else:
-        mosaic_tiles_map = np.zeros((180, 360), dtype=np.uint16)
-
-    mosaic_tiles_map = mosaic_tiles_map + tiles_map_by_epsg[epsg]
-    tiles_map_by_epsg['mosaic'] = mosaic_tiles_map
-
-    if 'mosaic' in bbox_by_epsg.keys():
-        mosaic_min_lon, mosaic_max_lon, mosaic_min_lat, mosaic_max_lat = \
-            bbox_by_epsg['mosaic']
-    else:
-        mosaic_min_lat = +90
-        mosaic_max_lat = -90
-        mosaic_min_lon = +180
-        mosaic_max_lon = -180
-
-    mosaic_min_lon = min([mosaic_min_lon, epsg_min_lon])
-    mosaic_max_lon = max([mosaic_max_lon, epsg_max_lon])
-    mosaic_min_lat = min([mosaic_min_lat, epsg_min_lat])
-    mosaic_max_lat = max([mosaic_max_lat, epsg_max_lat])
-
-    bbox_by_epsg['mosaic'] = \
-        mosaic_min_lon, mosaic_max_lon, mosaic_min_lat, mosaic_max_lat
 
 
 def main(argv=None):

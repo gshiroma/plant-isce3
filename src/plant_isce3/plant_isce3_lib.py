@@ -21,7 +21,8 @@ from plant_isce3.readers.orbit import load_orbit_from_xml
 
 import plant
 
-LIST_OF_SUPPORTED_NISAR_PRODUCTS = ['RRSD', 'RSLC', 'GCOV', 'GSLC', 'STATIC']
+LIST_OF_SUPPORTED_NISAR_PRODUCTS = [
+    'RRSD', 'RSLC', 'SLC', 'GCOV', 'GSLC', 'STATIC']
 LIST_OF_NISAR_INSTRUMENTS = ['LSAR', 'SSAR']
 
 DEFAULT_ISCE3_TEMPORARY_FORMAT = 'GTiff'
@@ -775,34 +776,6 @@ def multilook_isce3(input_raster_file, output_file,
     del output_gdal_ds
 
 
-def load_aws_credentials(profile="default"):
-
-    credentials_path = os.path.expanduser("~/.aws/credentials")
-
-    if not os.path.exists(credentials_path):
-        raise FileNotFoundError('AWS credentials file not found:'
-                                f' {credentials_path}')
-
-    config = configparser.ConfigParser()
-    config.read(credentials_path)
-
-    if profile not in config:
-        raise ValueError(f"Profile '{profile}' not found in"
-                         f" {credentials_path}")
-
-    creds = {
-        "aws_access_key_id": config[profile].get("aws_access_key_id"),
-        "aws_secret_access_key": config[profile].get("aws_secret_access_key"),
-        "region_name": config[profile].get("region", "us-east-1"),
-
-    }
-
-    if "aws_session_token" in config[profile]:
-        creds["aws_session_token"] = config[profile]["aws_session_token"]
-
-    return creds
-
-
 def apply_slc_corrections(burst_in,
 
                           flag_output_complex: bool = False,
@@ -933,7 +906,7 @@ class PlantIsce3Sensor():
 
             self.sensor_name = 'NISAR'
             self.nisar_product_obj = open_product(self.input_file)
-            self.frequency = self.get_frequency_str()
+            self.frequency = self.get_frequency()
             return
 
         if self.input_file.endswith('.zip'):
@@ -943,7 +916,7 @@ class PlantIsce3Sensor():
 
         print(f'ERROR file not recognized: {self.input_file}')
 
-    def get_frequency_str(self):
+    def get_frequency(self):
         if (self.sensor_name != 'NISAR'):
             return
 
@@ -958,9 +931,9 @@ class PlantIsce3Sensor():
         if len(frequency_list) == 0:
             return
 
-        frequency_str = frequency_list[0]
+        frequency = frequency_list[0]
 
-        return frequency_str
+        return frequency
 
     def load_sentinel_1_bursts(self):
         if (self.sensor_name == 'NISAR'):
@@ -1135,7 +1108,7 @@ class PlantIsce3Sensor():
     def get_radar_grid(self, frequency=None):
         if self.sensor_name == 'NISAR':
             if frequency is None:
-                frequency = self.get_frequency_str()
+                frequency = self.get_frequency()
             return self.nisar_product_obj.getRadarGrid(
                 frequency)
 
@@ -1916,7 +1889,7 @@ class PlantIsce3Script(plant.PlantScript):
     def get_nlooks(self, frequency=None):
 
         if frequency is None:
-            frequency = self.get_frequency_str()
+            frequency = self.get_frequency()
 
         if frequency is not None:
             frequency_lower = frequency.lower()
@@ -1942,7 +1915,7 @@ class PlantIsce3Script(plant.PlantScript):
     def _get_input_raster_from_nisar_product(self, input_raster=None,
                                              input_file=None,
                                              plant_product_obj=None,
-                                             frequency_str=None):
+                                             frequency=None):
 
         if (input_raster is None and
                 getattr(self, 'input_raster', None) is not None):
@@ -1959,13 +1932,13 @@ class PlantIsce3Script(plant.PlantScript):
         symmetrize_bands = \
             getattr(self, 'symmetrize_bands', None)
 
-        if frequency_str is None and plant_product_obj is None:
-            print('ERROR frequency_str and plant_product_obj cannot both be'
+        if frequency is None and plant_product_obj is None:
+            print('ERROR frequency and plant_product_obj cannot both be'
                   ' None in the call to get_input_raster_from_nisar_product()')
             return
 
-        if frequency_str is None:
-            frequency_str = plant_product_obj.get_frequency_str()
+        if frequency is None:
+            frequency = plant_product_obj.get_frequency()
 
         if input_raster is not None:
 
@@ -2026,16 +1999,16 @@ class PlantIsce3Script(plant.PlantScript):
                 input_raster = temp_file
 
         else:
-            self.print(f'selecting product frequency: {frequency_str}')
+            self.print(f'selecting product frequency: {frequency}')
 
             nisar_product_obj = open_product(input_file)
 
             if nisar_product_obj.getProductLevel() == "L1":
                 imagery_path = (f'{nisar_product_obj.SwathPath}/'
-                                f'frequency{frequency_str}')
+                                f'frequency{frequency}')
             else:
                 imagery_path = (f'{nisar_product_obj.GridPath}/'
-                                f'frequency{frequency_str}')
+                                f'frequency{frequency}')
 
             if flag_symmetrize:
                 hv_ref = f'HDF5:{input_file}:{imagery_path}/HV'
@@ -2046,7 +2019,7 @@ class PlantIsce3Script(plant.PlantScript):
             else:
                 temp_symmetrized_file = None
 
-            raster_file = f'NISAR:{input_file}:{frequency_str}'
+            raster_file = f'NISAR:{input_file}:{frequency}'
             temp_file = plant.get_temporary_file(append=True,
                                                  ext='vrt')
             self.print(f'*** creating temporary file (2): {temp_file}')
@@ -2057,7 +2030,7 @@ class PlantIsce3Script(plant.PlantScript):
                 output_format='VRT')
             input_raster = temp_file
 
-        nlooks_y, nlooks_x = self.get_nlooks(frequency_str)
+        nlooks_y, nlooks_x = self.get_nlooks(frequency)
 
         if nlooks_y > 1 or nlooks_x > 1:
 
@@ -2102,7 +2075,7 @@ class PlantIsce3Script(plant.PlantScript):
 
         return input_raster
 
-    def get_frequency_str(self):
+    def get_frequency(self):
 
         frequency = self.getattr2('frequency')
 
@@ -2711,7 +2684,7 @@ def execute(command,
 
     with sink:
 
-        if verbose and plant.plant_config.main_script is not None:
+        if verbose:
             arguments = plant.get_command_line_from_argv(argv)
             command_line = (f'{module_name}.py {arguments}')
             print(f'PLAnT-ISCE3 {plant_isce3.VERSION} (API) -'
