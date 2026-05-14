@@ -857,6 +857,34 @@ def get_isce3_temporary_format(output_file, output_format=None):
     return output_format
 
 
+def get_files_from_s3_bucket(my_bucket, s3_prefix,
+                             extension=None, verbose=False):
+
+    if verbose:
+        print('s3_prefix:', s3_prefix)
+
+    if s3_prefix:
+        files_iterator = my_bucket.objects.filter(Prefix=s3_prefix)
+    else:
+        files_iterator = my_bucket.objects.all()
+
+    file_list = []
+    for _, objects in enumerate(files_iterator):
+
+        if verbose:
+            print('objets.key:', objects.key)
+
+        file_path = objects.key
+        if extension and not file_path.endswith(extension):
+            continue
+
+        if verbose:
+            print('file_path:', file_path, file_path.__class__)
+        file_list.append(objects.key)
+
+    return file_list
+
+
 class PlantIsce3Sensor():
 
     def __init__(self, plant_script_obj=None, input_file=None,
@@ -1118,7 +1146,7 @@ class PlantIsce3Sensor():
         print(f'ERROR sensor not supported: {self.sensor_name}')
 
     def get_radar_grid_ml(self, frequency=None):
-        radar_grid = self.get_radar_grid()
+        radar_grid = self.get_radar_grid(frequency=frequency)
 
         radar_grid_ml = self.plant_script_obj.get_radar_grid_ml(
             radar_grid, frequency=frequency)
@@ -2083,7 +2111,8 @@ class PlantIsce3Script(plant.PlantScript):
 
     def get_radar_grid_ml(self, radar_grid, frequency=None):
 
-        if self.select_row is not None or self.select_col is not None:
+        if (self.getattr2('select_row') is not None or
+                self.getattr2('select_col') is not None):
             self.plant_transform_obj.update_crop_window(
                 length_orig=radar_grid.length,
                 width_orig=radar_grid.width)
@@ -2272,6 +2301,263 @@ class PlantIsce3Script(plant.PlantScript):
 
     def parse_nisar_product_filename(self, filename_with_extension):
         return parse_nisar_product_filename(filename_with_extension)
+
+    def get_masked_nisar_data_radar_coordinates(
+            self, nisar_product_obj, image,
+            freq, nlooks_y, nlooks_x):
+        try:
+            swaths_base_path = nisar_product_obj.SwathPath
+        except BaseException:
+            print('ERROR could not get swath path'
+                  ' from provided product. Ensure the product'
+                  ' is a level 1 product.')
+            return
+
+        masked_image = np.full_like(image, np.nan)
+
+        with plant.h5py_file_wrapper(self.input_file, 'r') as root_ds:
+            for i in range(1, 6):
+                valid_samples_path = (
+                    f'{swaths_base_path}/frequency{freq}/'
+                    f'validSamplesSubSwath{i}')
+
+                if valid_samples_path not in root_ds:
+                    continue
+
+                valid_samples_array = root_ds[valid_samples_path][()]
+
+                for row in range(image.shape[0]):
+
+                    start = np.nanmedian(valid_samples_array[
+                        row * nlooks_y: (row + 1) * nlooks_y, 0], axis=0)
+                    stop = np.nanmedian(valid_samples_array[
+                        row * nlooks_y: (row + 1) * nlooks_y, 1], axis=0)
+
+                    if start < 0 or stop < 0:
+                        continue
+
+                    start_ml = max(int(np.ceil(start / nlooks_x)), 0)
+                    stop_ml = min(int(np.floor(stop / nlooks_x)) + 1,
+                                  image.shape[1])
+
+                    masked_image[row, start_ml: stop_ml] = \
+                        image[row, start_ml: stop_ml]
+
+        return masked_image
+
+    def compute_binned_aggregation(self, x_image, y_image,
+                                   x_min, x_max, x_step):
+
+        if x_image.shape != y_image.shape:
+            raise ValueError(f"x_image shape {x_image.shape}"
+                             f" != y_image shape {y_image.shape}")
+
+        x = x_image.ravel()
+        y = y_image.ravel()
+
+        mask = np.isfinite(x) & np.isfinite(y)
+        x = x[mask]
+        y = y[mask]
+
+        bins = np.arange(x_min, x_max + x_step, x_step)
+        bin_centers = (bins[:-1] + bins[1:]) / 2
+
+        bin_idx = np.digitize(x, bins) - 1
+        valid = (bin_idx >= 0) & (bin_idx < len(bin_centers))
+
+        bin_idx = bin_idx[valid]
+        y = y[valid]
+
+        def compute_means(values):
+            sums = np.bincount(bin_idx, weights=values,
+                               minlength=len(bin_centers))
+            counts = np.bincount(bin_idx, minlength=len(bin_centers))
+            with np.errstate(invalid='ignore', divide='ignore'):
+                means = sums / counts
+            means[counts == 0] = np.nan
+            return means
+
+        if np.iscomplexobj(y):
+            means_real = compute_means(np.real(y))
+            means_imag = compute_means(np.imag(y))
+            means = means_real + 1j * means_imag
+        else:
+            means = compute_means(y)
+
+        return bin_centers, means
+
+    def generate_elevation_profiles(
+            self, output_dir,
+            nisar_product_obj, freq, pol,
+            image,
+            radar_grid_ml,
+            metadata_dict,
+            profile_filter_size,
+
+            suffix_ml,
+            prefix='',
+            flag_phase=False):
+
+        width = image.shape[1]
+
+        output_elevation_image = os.path.join(
+            output_dir, 'elevation',
+            f'elevation_image_{freq}{suffix_ml}.tif')
+
+        if os.path.isfile(output_elevation_image):
+
+            print("elevation image file already exists, reading from file:",
+                  output_elevation_image)
+            elevation_image = plant.read_image(output_elevation_image).image
+
+        else:
+
+            print('generating elevation profiles for frequency', freq)
+            dem_raster = isce3.io.Raster(self.dem_file)
+
+            orbit = nisar_product_obj.getOrbit()
+
+            native_doppler = nisar_product_obj.getDopplerCentroid()
+            native_doppler.bounds_error = False
+
+            grid_doppler = isce3.core.LUT2d()
+            epsg = 4326
+            dem_interp_method = isce3.core.DataInterpMethod.BIQUINTIC
+            rdr2geo_params = isce3.geometry.Rdr2GeoParams()
+            geo2rdr_params = isce3.geometry.Geo2RdrParams()
+
+            interpolated_dem_raster = None
+            coordinate_x_raster = None
+            coordinate_y_raster = None
+            incidence_angle_raster = None
+            los_unit_vector_x_raster = None
+            los_unit_vector_y_raster = None
+            along_track_unit_vector_x_raster = None
+            along_track_unit_vector_y_raster = None
+
+            ground_track_velocity_raster = None
+
+            nbands = 1
+            length = radar_grid_ml.length
+            width = radar_grid_ml.width
+
+            print('*** elevation image length:', length)
+            print('*** elevation image width:', width)
+
+            output_elevation_image_dir = os.path.dirname(
+                output_elevation_image)
+            os.makedirs(output_elevation_image_dir, exist_ok=True)
+            elevation_angle_raster = isce3.io.Raster(
+                output_elevation_image,
+
+                width,
+                length,
+                nbands,
+                gdal.GDT_Float32,
+                "GTiff")
+
+            isce3.geometry.get_geolocation_grid(
+                dem_raster,
+                radar_grid_ml,
+                orbit,
+                native_doppler,
+                grid_doppler,
+                epsg,
+                dem_interp_method,
+                rdr2geo_params,
+                geo2rdr_params,
+                interpolated_dem_raster,
+                coordinate_x_raster,
+                coordinate_y_raster,
+                incidence_angle_raster,
+                los_unit_vector_x_raster,
+                los_unit_vector_y_raster,
+                along_track_unit_vector_x_raster,
+                along_track_unit_vector_y_raster,
+                elevation_angle_raster,
+                ground_track_velocity_raster)
+
+            elevation_angle_raster.close_dataset()
+
+            if os.path.isfile(output_elevation_image):
+                print("## file saved:", output_elevation_image)
+                self.output_files.append(output_elevation_image)
+
+            elevation_image = \
+                plant.read_image(output_elevation_image).image
+
+            elevation_image_max = np.nanmax(elevation_image)
+            if (not np.isfinite(elevation_image_max) or
+                    elevation_image_max == 0):
+                print('ERROR elevation image max value is not finite or is 0,'
+                      f' check elevation image for frequency {freq}:'
+                      f' {output_elevation_image}')
+                return
+
+        elevation_min = 30.0
+        elevation_max = 41.5
+        elevation_step = (elevation_max - elevation_min) / 100.0
+
+        print('computing elevation profiles for frequency', freq)
+        print('    elevation min:', elevation_min)
+        print('    elevation max:', elevation_max)
+        print('    elevation step:', elevation_step)
+
+        elevation_profile, image_profile = \
+            self.compute_binned_aggregation(
+                elevation_image, image,
+                elevation_min, elevation_max, elevation_step)
+
+        print('elevation profile shape:', elevation_profile.shape)
+        print('image profile shape:', image_profile.shape)
+
+        if profile_filter_size > 0:
+            print('applying profile filter of size',
+                  profile_filter_size)
+
+            image_profile = plant.filter_data(
+                image_profile,
+                mean=[1, profile_filter_size])
+
+        elevation_profile_file = os.path.join(
+            output_dir, 'elevation',
+            f'elevation_profile_{freq}.tif')
+
+        plant.save_image(elevation_profile,
+                         output_file=elevation_profile_file,
+                         metadata=metadata_dict,
+                         force=True)
+
+        image_mean = np.nanmedian(image_profile)
+        print(f'image mean ({pol}): {image_mean}')
+        if not np.isfinite(image_mean):
+            image_profile_file = os.path.join(
+                output_dir, 'elevation',
+                f'{prefix}profile_{freq}_{pol}_with_offset_error.tif')
+            plant.save_image(image_profile,
+                             output_file=image_profile_file,
+                             metadata=metadata_dict,
+                             force=True)
+            print(f'ERROR image mean for frequency {freq},'
+                  f' polarization {pol} is not finite: {image_mean}')
+            return
+
+        if flag_phase:
+            image_profile = np.angle(
+                image_profile * np.exp(-1j * np.angle(image_mean)))
+        else:
+            image_profile /= image_mean
+
+        image_profile_file = os.path.join(
+            output_dir, 'elevation',
+            f'{prefix}profile_{freq}_{pol}.tif')
+
+        plant.save_image(image_profile,
+                         output_file=image_profile_file,
+                         metadata=metadata_dict,
+                         force=True)
+
+        return elevation_profile, image_profile
 
 
 def parse_nisar_product_filename(filename_with_extension):

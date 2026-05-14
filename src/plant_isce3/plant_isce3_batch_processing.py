@@ -8,11 +8,15 @@ import plant_isce3
 import subprocess
 import numpy as np
 from osgeo import gdal, ogr, osr
+import copy
+from datetime import datetime, timedelta
+import shutil
 
 import h5py
 import boto3
 import glob
 import pickle
+import isce3
 
 from plant_isce3.readers.product import open_product
 
@@ -174,6 +178,17 @@ def get_parser():
                         action='store_true',
                         dest='step_2_generate_gcov_runconfig',
                         help='Generate run configuration files')
+
+    parser.add_argument('--step-2-tec',
+                        '--step-2-download-tec',
+                        action='store_true',
+                        dest='step_2_download_tec_file',
+                        help='Download TEC file')
+
+    parser.add_argument('--anc-bucket-name',
+                        type=str,
+                        dest='anc_bucket_name',
+                        help='Ancillary files bucket name')
 
     parser.add_argument('--step-2-off-diagonal-analysis',
                         action='store_true',
@@ -373,7 +388,32 @@ def get_parser():
                         help='Directory containing mosaic files in'
                         ' geographic coordinates')
 
+    parser.add_argument('--profile-max-in-db',
+                        type=float,
+                        dest='profile_max_in_db',
+                        help='Maximum value for EAP profiles in dB')
+
+    parser.add_argument('--profile-min-in-db',
+                        type=float,
+                        dest='profile_min_in_db',
+                        help='Minimum value for EAP profiles in dB')
+
     return parser
+
+
+def parse_tec_filename(tec_filename):
+    tec_basename = os.path.basename(tec_filename)
+    creation_datetime = datetime.strptime(tec_basename[14:14 + 15],
+                                          "%Y%m%dT%H%M%S")
+    start_datetime = datetime.strptime(tec_basename[30:30 + 15],
+                                       "%Y%m%dT%H%M%S")
+    end_datetime = datetime.strptime(tec_basename[46:46 + 15],
+                                     "%Y%m%dT%H%M%S")
+    ret_dict = {}
+    ret_dict['creation_datetime'] = creation_datetime
+    ret_dict['start_datetime'] = start_datetime
+    ret_dict['end_datetime'] = end_datetime
+    return ret_dict
 
 
 class PlantIsce3BatchProcessing(plant_isce3.PlantIsce3Script):
@@ -535,10 +575,28 @@ class PlantIsce3BatchProcessing(plant_isce3.PlantIsce3Script):
 
                 image_obj = plant.read_image(tif_file)
                 metadata = image_obj.metadata
+                if metadata is None:
+                    print('====================================')
+                    print('====================================')
+                    print('====================================')
+                    print(f'WARNING No metadata found for file: {tif_file}.'
+                          ' Skipping.')
+                    print(f'WARNING No metadata found for file: {tif_file}.'
+                          ' Skipping.')
+                    print(f'WARNING No metadata found for file: {tif_file}.'
+                          ' Skipping.')
+                    print('====================================')
+                    print('====================================')
+                    print('====================================')
+                    continue
 
                 frequency = None
                 pol = None
                 bounding_polygon_wkt = None
+                if metadata is None:
+                    print('tif_file:', tif_file)
+                    raise ValueError('TIF file has no valid metadata:'
+                                     f' {tif_file}')
                 for key, value in metadata.items():
 
                     if key == 'FREQUENCY':
@@ -1074,9 +1132,10 @@ class PlantIsce3BatchProcessing(plant_isce3.PlantIsce3Script):
 
             resource = boto3.resource('s3', **creds)
 
-            my_bucket = resource.Bucket(bucket_name)
+            nisar_product_bucket = resource.Bucket(bucket_name)
 
-            files_iterator = my_bucket.objects.filter(Prefix=s3_prefix)
+            files_iterator = nisar_product_bucket.objects.filter(
+                Prefix=s3_prefix)
 
         else:
             file_list = glob.glob(self.input_file, recursive=True)
@@ -1144,7 +1203,7 @@ class PlantIsce3BatchProcessing(plant_isce3.PlantIsce3Script):
                                      f.replace('.h5', '_cache.h5'))
                     print('*** fast access hdf5:', cache_hdf5)
 
-            print(f'##    Product {product_count}: {basename}'
+            print(f'##     Product {product_count}: {basename}'
                   f' (s3 object: {i})')
 
             if flag_s3_bucket:
@@ -1258,7 +1317,19 @@ class PlantIsce3BatchProcessing(plant_isce3.PlantIsce3Script):
                           ' Skipping.')
                     continue
 
-            list_of_frequencies_dict = self.nisar_product_obj.polarizations
+            if self.frequency is None:
+                list_of_frequencies_dict = self.nisar_product_obj.polarizations
+            else:
+                if (self.frequency
+                        not in self.nisar_product_obj.polarizations.keys()):
+                    print('WARNING skipping product because frequency'
+                          f' {self.frequency} is not present in the product'
+                          ' polarizations:',
+                          self.nisar_product_obj.polarizations)
+                    continue
+                list_of_frequencies_dict = {
+                    self.frequency:
+                    self.nisar_product_obj.polarizations[self.frequency]}
 
             if self.must_be_quad_pol:
                 if ('A' in list_of_frequencies_dict.keys() and
@@ -1290,11 +1361,11 @@ class PlantIsce3BatchProcessing(plant_isce3.PlantIsce3Script):
                             exist_ok=True)
                 print('    Step 1: Downloading browse file (PNG):', f_png)
                 try:
-                    my_bucket.download_file(png_s3_prefix, f_png)
+                    nisar_product_bucket.download_file(png_s3_prefix, f_png)
                 except BaseException:
-                    print('        there was an error downloading file:',
+                    print('WARNING there was an error downloading file:',
                           f_png)
-                    continue
+
                 if os.path.isfile(f_png):
                     os.rename(f_png, png_file)
 
@@ -1313,10 +1384,10 @@ class PlantIsce3BatchProcessing(plant_isce3.PlantIsce3Script):
                             exist_ok=True)
                 print('    Step 1: Downloading browse file (KML):', f_kml)
                 try:
-                    my_bucket.download_file(kml_s3_prefix, f_kml)
+                    nisar_product_bucket.download_file(kml_s3_prefix, f_kml)
 
                 except BaseException:
-                    print('        there was an error downloading file:',
+                    print('WARNING there was an error downloading file:',
                           f_kml)
 
                 if os.path.isfile(f_kml):
@@ -1426,9 +1497,6 @@ class PlantIsce3BatchProcessing(plant_isce3.PlantIsce3Script):
             if current_product_level != 'L2':
                 epsg = str(4326)
 
-            h5_obj.close()
-            del h5_obj
-
             self.update_tiles_map_dict(tiles_map_by_epsg, bbox_by_epsg,
                                        bounding_polygon, epsg)
 
@@ -1447,16 +1515,133 @@ class PlantIsce3BatchProcessing(plant_isce3.PlantIsce3Script):
                             exist_ok=True)
                 print('    Step 1: Downloading file:', f)
                 try:
-                    my_bucket.download_file(objects.key, f)
+                    nisar_product_bucket.download_file(objects.key, f)
                     os.rename(f, downloaded_file)
 
                 except BaseException:
-                    print('        there was an error downloading file:', f)
+                    print('WARNING there was an error downloading file:', f)
                     continue
 
             else:
                 print('        HDF5 not found/downloaded:', f)
                 downloaded_file = None
+
+            tec_kwargs = {}
+            if self.step_2_download_tec_file:
+                print('Downloading TEC file')
+
+                if self.anc_bucket_name is not None:
+                    anc_bucket_name = self.anc_bucket_name
+                else:
+                    anc_bucket_name = bucket_name
+
+                print('Ancillary files bucket name:', anc_bucket_name)
+
+                anc_bucket_name = anc_bucket_name.replace('s3://', '')
+                anc_bucket_obj = resource.Bucket(anc_bucket_name)
+
+                start_time_isce3 = \
+                    plant_isce3.get_nisar_product_zero_doppler_start_time(
+                        h5_obj)
+                print('start time:', start_time_isce3)
+                end_time_isce3 = \
+                    plant_isce3.get_nisar_product_zero_doppler_end_time(
+                        h5_obj)
+                print('end time:', end_time_isce3)
+
+                start_datetime = \
+                    datetime.fromisoformat(
+                        isce3.core.DateTime(
+                            start_time_isce3).isoformat().split('.')[0])
+                end_datetime = \
+                    datetime.fromisoformat(
+                        isce3.core.DateTime(
+                            end_time_isce3).isoformat().split('.')[0])
+
+                tec_count = 0
+                flag_success = False
+                while not flag_success and tec_count < 24:
+                    tec_datetime = \
+                        (copy.deepcopy(start_datetime) -
+                         timedelta(hours=2 * tec_count))
+                    tec_year = tec_datetime.year
+                    tec_month = tec_datetime.month
+                    tec_day = tec_datetime.day
+                    if anc_bucket_name.startswith('nisar-adt'):
+                        tec_dir = 'IMAGEN_TOTTEC_ONLY'
+                    else:
+                        tec_dir = \
+                            (f'products/TEC/{tec_year}/{tec_month:02d}/'
+                             f'{tec_day:02d}')
+                    print('TEC count:', tec_count)
+                    print('    TEC directory:', tec_dir)
+
+                    tec_files = plant_isce3.get_files_from_s3_bucket(
+                        anc_bucket_obj, tec_dir, extension='.json')
+
+                    print('    len(tec_files) before:', len(tec_files))
+
+                    if len(tec_files) == 0:
+                        tec_files = plant_isce3.get_files_from_s3_bucket(
+                            anc_bucket_obj, tec_dir, extension='.json',
+                            verbose=True)
+
+                    filtered_tec_files = []
+                    for tec_file in tec_files:
+                        for s in ['.context.json', '.dataset.json',
+                                  '.met.json']:
+                            if tec_file.endswith(s):
+                                break
+                        else:
+                            filtered_tec_files.append(tec_file)
+
+                    print('    len(filtered_tec_files) after:',
+                          len(filtered_tec_files))
+
+                    print('    tec_files:', filtered_tec_files)
+                    for tec_file in filtered_tec_files:
+                        parsed_tec_filename = parse_tec_filename(tec_file)
+                        tec_start_datetime = \
+                            parsed_tec_filename['start_datetime']
+                        tec_end_datetime = \
+                            parsed_tec_filename['end_datetime']
+                        print('    NISAR product:', start_datetime,
+                              end_datetime)
+                        print('    TEC product:', tec_start_datetime,
+                              tec_end_datetime)
+                        margin = timedelta(seconds=10)
+                        flag_success = \
+                            (tec_start_datetime < (start_datetime - margin) and
+                             tec_end_datetime > (end_datetime + margin))
+                        print('    flag success:', flag_success)
+                        if flag_success:
+                            break
+                    tec_count += 1
+
+                if flag_success:
+
+                    tec_basename = os.path.basename(tec_file)
+
+                    if not os.path.isfile(tec_file):
+                        print('Downloading TEC file:', tec_basename)
+                        anc_bucket_obj.download_file(tec_file, tec_basename)
+
+                    if os.path.isfile(tec_basename):
+                        ancillary_files_dir = '1_downloaded_ancillary_data'
+                        output_tec_file = os.path.join(ancillary_files_dir,
+                                                       tec_basename)
+
+                        os.makedirs(ancillary_files_dir, exist_ok=True)
+                        shutil.move(tec_basename, output_tec_file)
+                        tec_kwargs['tec_file'] = output_tec_file
+                    else:
+                        print('WARNING there was an issue downloading the'
+                              f' TEC file: {basename}')
+                else:
+                    print(f'ERROR could not find a TEC file for product {f}')
+
+            h5_obj.close()
+            del h5_obj
 
             output_runconfig = os.path.join(output_dir,
                                             basename + '_gcov.yaml')
@@ -1466,7 +1651,8 @@ class PlantIsce3BatchProcessing(plant_isce3.PlantIsce3Script):
                 output_l2_basename = f'{basename}.h5'
                 output_l2_basename = output_l2_basename.replace('L1', 'L2')
                 output_l2_basename = output_l2_basename.replace('RSLC', 'GCOV')
-                output_l2 = os.path.join(output_dir, basename +
+                output_l2 = os.path.join(output_dir,
+
                                          output_l2_basename)
                 geo_kwargs = {}
                 if self.plant_geogrid_obj is not None:
@@ -1488,7 +1674,8 @@ class PlantIsce3BatchProcessing(plant_isce3.PlantIsce3Script):
                     full_covariance=self.full_covariance,
                     debug=self.flag_debug,
                     force=True,
-                    **geo_kwargs)
+                    **geo_kwargs,
+                    **tec_kwargs)
 
             for frequency, pols in list_of_frequencies_dict.items():
 
@@ -1599,34 +1786,39 @@ class PlantIsce3BatchProcessing(plant_isce3.PlantIsce3Script):
              f'identification/listOfFrequencies')
         list_of_frequencies = h5_obj[list_of_frequencies_path][()]
         print('*** list_of_frequencies:', list_of_frequencies)
-        first_frequency = list_of_frequencies[0].decode()
-        print(f'*** first_frequency: {first_frequency}')
 
-        if current_file_product_type.startswith('G'):
-            first_frequency_path = \
-                (f'/science/LSAR/{current_file_product_type}/grids/'
-                 f'frequency{first_frequency}')
-        else:
-            first_frequency_path = \
-                (f'/science/LSAR/{current_file_product_type}/swaths/'
-                 f'frequency{first_frequency}')
+        for frequency in list_of_frequencies:
+            if not isinstance(frequency, str):
+                frequency = frequency.decode()
 
-        if current_file_product_type.startswith('G'):
-            projection_path = f'{first_frequency_path}/projection'
+            print(f'*** frequency: {frequency}')
 
-            print('*** copying projection group')
-            hdf5_out_obj.require_group(first_frequency_path)
-            h5_obj.copy(projection_path, hdf5_out_obj,
-                        name=projection_path)
+            if current_file_product_type.startswith('G'):
+                frequency_path = \
+                    (f'/science/LSAR/{current_file_product_type}/grids/'
+                     f'frequency{frequency}')
+            else:
+                frequency_path = \
+                    (f'/science/LSAR/{current_file_product_type}/swaths/'
+                     f'frequency{frequency}')
 
-        list_of_polarizations_path = \
-            f'{first_frequency_path}/listOfPolarizations'
+            if current_file_product_type.startswith('G'):
+                projection_path = f'{frequency_path}/projection'
 
-        print('*** copying list_of_polarizations group')
-        hdf5_out_obj.require_group(first_frequency_path)
-        h5_obj.copy(list_of_polarizations_path, hdf5_out_obj,
-                    name=list_of_polarizations_path)
-        print('*** done copying projection and list of polarizations groups')
+                print('*** copying projection group')
+                hdf5_out_obj.require_group(frequency_path)
+                h5_obj.copy(projection_path, hdf5_out_obj,
+                            name=projection_path)
+
+            list_of_polarizations_path = \
+                f'{frequency_path}/listOfPolarizations'
+
+            print('*** copying list_of_polarizations group')
+            hdf5_out_obj.require_group(frequency_path)
+            h5_obj.copy(list_of_polarizations_path, hdf5_out_obj,
+                        name=list_of_polarizations_path)
+            print('*** done copying projection and list of polarizations'
+                  ' groups')
 
         return hdf5_out_obj
 
@@ -1660,15 +1852,36 @@ class PlantIsce3BatchProcessing(plant_isce3.PlantIsce3Script):
             output_dir_off_diag_analysis = os.path.join(
                 '2_off_diag_analysis', basename + suffix)
 
-            plant_isce3.off_diagonal_analysis(
-                downloaded_file,
-                output_dir=output_dir_off_diag_analysis,
-                frequency=frequency,
-                output_skip_if_existent=self.output_skip_if_existent,
-                force=True,
-                nlooks_x=nlooks_x, nlooks_y=nlooks_y,
+            flag_success_off_diag_analysis = False
+            error_count = 0
+            while not flag_success_off_diag_analysis and error_count < 3:
+                try:
+                    plant_isce3.off_diagonal_analysis(
+                        downloaded_file,
+                        output_dir=output_dir_off_diag_analysis,
+                        frequency=frequency,
+                        output_skip_if_existent=self.output_skip_if_existent,
+                        force=True,
+                        dem=self.dem_file,
+                        generate_elevation_profiles=True,
+                        remove_cross_multiplication_files=True,
+                        nlooks_x=nlooks_x, nlooks_y=nlooks_y,
 
-                **kwargs_off_diag_analysis)
+                        **kwargs_off_diag_analysis)
+                    flag_success_off_diag_analysis = True
+                except Exception:
+                    error_count += 1
+                    print('==================================================')
+                    print('==================================================')
+                    print('==================================================')
+                    print('WARNING there was an error during the off-diagonal'
+                          ' analysis.')
+                    print('==================================================')
+                    print('==================================================')
+                    print('==================================================')
+            if not flag_success_off_diag_analysis:
+                print('WARNING the off-diagonal analysis did not complete'
+                      ' successfully after 3 attempts. Skipping.')
 
         if self.step_2_eap_analysis:
             flag_success_eap_analysis = False
@@ -1678,6 +1891,12 @@ class PlantIsce3BatchProcessing(plant_isce3.PlantIsce3Script):
                     eap_kwargs = {}
                     if self.worldcover:
                         eap_kwargs['worldcover'] = self.worldcover
+                    if self.profile_max_in_db is not None:
+                        eap_kwargs['profile_max_in_db'] = \
+                            self.profile_max_in_db
+                    if self.profile_min_in_db is not None:
+                        eap_kwargs['profile_min_in_db'] = \
+                            self.profile_min_in_db
                     output_dir_eap = os.path.join(
                         '2_eap_analysis', basename + suffix_ml)
                     plant_isce3.rslc_eap_analysis(
@@ -1698,23 +1917,24 @@ class PlantIsce3BatchProcessing(plant_isce3.PlantIsce3Script):
                         save_multilooked_backscatter_png=True,
                         save_processed_backscatter_png=True,
                         save_profile_plot_png=True,
+                        create_plots_with_predefined_thresholds=True,
                         nlooks_x=nlooks_x,
                         nlooks_y=nlooks_y,
                         **eap_kwargs)
                     flag_success_eap_analysis = True
-                except Exception as e:
+                except Exception:
                     error_count += 1
                     print('==================================================')
                     print('==================================================')
                     print('==================================================')
                     print('WARNING: There was an error during the EAP'
-                          ' analysis. Error details:', str(e).replace('ERROR:',
-                                                                      ''))
+                          ' analysis.')
+
                     print('==================================================')
                     print('==================================================')
                     print('==================================================')
             if not flag_success_eap_analysis:
-                print('ERROR: The EAP analysis did not complete successfully'
+                print('WARNING The EAP analysis did not complete successfully'
                       ' after 3 attempts. Skipping.')
 
         masked_data_kwargs = {

@@ -6,7 +6,6 @@ import plant_isce3
 from osgeo import gdal
 
 import isce3
-from plant_isce3.readers import SLC, open_product
 
 
 def get_parser():
