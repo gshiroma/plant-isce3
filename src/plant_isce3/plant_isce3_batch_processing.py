@@ -806,15 +806,15 @@ class PlantIsce3BatchProcessing(plant_isce3.PlantIsce3Script):
             os.makedirs('pickle_files', exist_ok=True)
             with open(frequency_epsg_dict_pickle_file, 'wb') as pickle_file:
                 pickle.dump(frequency_epsg_dict, pickle_file)
-            print('file saved:', frequency_epsg_dict_pickle_file)
+            print('## file saved:', frequency_epsg_dict_pickle_file)
 
             with open(tiles_map_by_epsg_pickle_file, 'wb') as pickle_file:
                 pickle.dump(tiles_map_by_epsg, pickle_file)
-            print('file saved:', tiles_map_by_epsg_pickle_file)
+            print('## file saved:', tiles_map_by_epsg_pickle_file)
 
             with open(bbox_by_epsg_pickle_file, 'wb') as pickle_file:
                 pickle.dump(bbox_by_epsg, pickle_file)
-            print('file saved:', bbox_by_epsg_pickle_file)
+            print('## file saved:', bbox_by_epsg_pickle_file)
 
         if self.step_1_mosaic_kmz and len(mosaic_kmz_file_list) > 0:
             print('    Step 1: Mosaic KMZ')
@@ -908,7 +908,7 @@ class PlantIsce3BatchProcessing(plant_isce3.PlantIsce3Script):
                         gdal.BuildVRT(vrt_file, file_list, srcNodata='nan',
                                       resampleAlg='average',
                                       VRTNodata='nan')
-                        print('        file saved:', vrt_file)
+                        print('##        file saved:', vrt_file)
                         add_overviews_vrt(vrt_file)
                         print(f'        file updated: {vrt_file}'
                               ' (added overviews)')
@@ -2312,7 +2312,7 @@ class PlantIsce3BatchProcessing(plant_isce3.PlantIsce3Script):
                           resampleAlg='average',
                           outputBounds=[min_lon, min_lat, max_lon, max_lat])
 
-            print('        file saved:', vrt_file)
+            print('##        file saved:', vrt_file)
             add_overviews_vrt(vrt_file)
             print(f'        file updated: {vrt_file} (added overviews)')
 

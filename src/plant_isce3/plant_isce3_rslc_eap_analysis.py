@@ -212,6 +212,7 @@ def get_parser():
     parser.add_argument('--png-prefix',
                         type=str,
                         dest='prefix',
+                        default='',
                         help='Prefix for output files')
 
     parser.add_argument('--profile-max-in-db',
