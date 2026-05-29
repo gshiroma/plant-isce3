@@ -44,6 +44,6 @@ python -m pip install .
 git clone https://github.com/isce-framework/plant-isce3.git
 cd plant-isce3
 export PLANT_ISCE3_HOME=$PWD/src
-export PYTHON_PATH=${PYTHON_PATH}:${PLANT_ISCE3_HOME}
+export PYTHONPATH=${PYTHONPATH}:${PLANT_ISCE3_HOME}
 export PATH=${PATH}:${PLANT_ISCE3_HOME}/plant_isce3
 ```
