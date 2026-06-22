@@ -245,8 +245,8 @@ class Base(pyre.component,
 
         except Exception as e:
             print('WARNING failed to read radar grid from ISCE3,'
-                  ' attempting to construct object using h5py')
-            print(f'Error details: {e}')
+                  ' attempting to construct object using h5py.'
+                  f' Error details: {e}')
 
         print(f'Reading radar grid metadata for frequency {frequency}'
               ' from HDF5 file using h5py')
@@ -429,7 +429,7 @@ class Base(pyre.component,
 
         try:
             frequencyList = self.frequencies
-        except:
+        except (AttributeError, KeyError):
             raise RuntimeError('Cannot determine list of available frequencies without parsing Product Identification')
 
         ###Determine if product has swaths / grids

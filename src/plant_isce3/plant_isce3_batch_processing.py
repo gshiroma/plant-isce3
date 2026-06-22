@@ -32,7 +32,7 @@ def get_parser():
     epilog = ''
     parser = plant.argparse(epilog=epilog,
                             description=descr,
-                            input_file=2,
+                            input_file=1,
                             dem_file=1,
                             geo=1,
 
@@ -48,23 +48,25 @@ def get_parser():
                             output_file=1)
 
     plant_isce3.add_arguments(parser,
+                              product_type=1,
                               nlooks_by_frequency=1,
+                              track_number=1,
+                              orbit_direction=1,
+                              frame_number=1,
+                              cycle_number=1,
+                              track_frame_db=1,
                               frequency=1)
 
-    parser.add_argument('--product-type',
+    parser.add_argument('--bucket-name',
                         type=str,
-                        dest='product_type',
-                        help='Product type')
+                        dest='bucket_name',
+                        help=('S3 bucket name where the input NISAR products'
+                              ' are located'))
 
-    parser.add_argument('--filename-cycle-number',
-                        type=int,
-                        dest='filename_cycle_number',
-                        help='Cycle number for filename filtering')
-
-    parser.add_argument('--frame-number',
-                        type=int,
-                        dest='frame_number',
-                        help='frame number for  filtering')
+    parser.add_argument('--anc-bucket-name',
+                        type=str,
+                        dest='anc_bucket_name',
+                        help='Ancillary files bucket name')
 
     parser.add_argument('--pol-mode-freq-a',
                         type=str,
@@ -109,11 +111,16 @@ def get_parser():
                         dest='must_be_quad_pol',
                         help='Require products to be quad-polarized')
 
-    parser.add_argument('--replace-l0b-with',
-                        '--replace-rrsd-with',
-                        type=str,
-                        dest='replace_l0b_with',
-                        help='Replace L0B with this string when searching for')
+    parser.add_argument('--must-be-mixed-mode',
+                        action='store_true',
+                        dest='must_be_mixed_mode',
+                        help='Require products to be mixed mode')
+
+    parser.add_argument('--must-not-be-mixed-mode',
+                        '--exclude-mixed-mode',
+                        action='store_true',
+                        dest='must_not_be_mixed_mode',
+                        help='Require products not to be mixed mode')
 
     parser.add_argument('--step-1-load-pickle-files',
                         action='store_true',
@@ -184,11 +191,6 @@ def get_parser():
                         action='store_true',
                         dest='step_2_download_tec_file',
                         help='Download TEC file')
-
-    parser.add_argument('--anc-bucket-name',
-                        type=str,
-                        dest='anc_bucket_name',
-                        help='Ancillary files bucket name')
 
     parser.add_argument('--step-2-off-diagonal-analysis',
                         action='store_true',
@@ -264,12 +266,44 @@ def get_parser():
                         dest='step_2_generate_png',
                         help='Generate PNG files')
 
-    parser.add_argument('--masked-data',
-                        '--masked-images',
-                        dest='masked_data_file',
-                        action='store_true',
-                        help=("Extract product's imagery and apply valid data"
-                              " mask"))
+    group = parser.add_mutually_exclusive_group(required=False)
+    group.add_argument('--masked-data',
+                       '--masked-images',
+                       dest='masked_data_file',
+                       action='store_true',
+                       help=("Extract product's imagery and apply valid data"
+                             " mask"))
+
+    group.add_argument('--rtc-gamma-to-sigma',
+                       '--rtc-gamma-to-sigma-layer',
+                       dest='rtc_gamma_to_sigma_file',
+                       action='store_true',
+                       help=("Extract the RTC gamma to sigma layer from the"
+                             " product"))
+
+    group.add_argument('--number-of-looks',
+                       '--number-of-looks-layer',
+                       dest='number_of_looks_file',
+                       action='store_true',
+                       help=("Extract the RTC gamma to sigma layer from the"
+                             " product"))
+
+    group.add_argument('--eap',
+                       '--elevation-antenna-patter',
+                       dest='elevation_antenna_pattern_file',
+                       action='store_true',
+                       help=("Extract elevation antenna pattern (EAP) layer."))
+
+    group.add_argument('--neb',
+                       '--noise-equivalent-backscatter',
+                       dest='noise_equivalent_backscatter_file',
+                       action='store_true',
+                       help=("Extract noise equivalent backscatter layer."))
+
+    group.add_argument('--doppler-centroid',
+                       dest='doppler_centroid_file',
+                       action='store_true',
+                       help=("Extract Doppler centroid layer."))
 
     parser.add_argument('--step-3-generate-vrt',
                         action='store_true',
@@ -398,6 +432,12 @@ def get_parser():
                         dest='profile_min_in_db',
                         help='Minimum value for EAP profiles in dB')
 
+    parser.add_argument('--create-plots-with-predefined-thresholds',
+                        action='store_true',
+                        dest='flag_create_plots_with_predefined_thresholds',
+                        help=('Create plots with predefined thresholds for'
+                              ' better visual comparison between profiles'))
+
     return parser
 
 
@@ -444,42 +484,84 @@ class PlantIsce3BatchProcessing(plant_isce3.PlantIsce3Script):
                        ' processing steps')
             return
 
-        if self.replace_l0b_with:
-            self.print(f'input file (original): {self.input_file}')
-            self.print(f'replace L0B with: {self.replace_l0b_with}')
-            if self.replace_l0b_with == 'RSLC':
-                replace_string = 'L1_L_RSLC'
-            elif self.replace_l0b_with == 'GCOV':
-                replace_string = 'L2_L_GCOV'
-            elif self.replace_l0b_with == 'GSLC':
-                replace_string = 'L2_L_GSLC'
-            else:
-                raise ValueError(
-                    f'Unrecognized replace string: {self.replace_l0b_with}')
-            self.input_file = self.input_file.replace('L0B_L_RRSD',
-                                                      replace_string)
-        else:
-            self.print(f'input file: {self.input_file}')
-
         aws_credentials_file = f"{os.path.expanduser('~')}/.aws/credentials"
         gdal.SetConfigOption('AWS_CONFIG_FILE', aws_credentials_file)
 
-        input_file_splitted = self.input_file.split('/')
+        bucket_name = None
+        if self.bucket_name:
+            flag_s3_bucket = True
+            bucket_name = self.bucket_name.replace('s3://', '')
+        else:
+            input_file_splitted = self.input_file.split('/')
+            flag_s3_bucket = input_file_splitted[0] == 's3:'
+            if (flag_s3_bucket and len(input_file_splitted) > 1 and
+                    input_file_splitted[1] != ''):
+                self.print(f'ERROR invalid s3 path: {input_file_splitted}')
+                return
 
-        flag_s3_bucket = input_file_splitted[0] == 's3:'
+        self.print(
+            f'process files from s3 bucket (True/False): {flag_s3_bucket}')
 
-        self.print(f'flag s3 bucket: {flag_s3_bucket}')
-
-        if (flag_s3_bucket and len(input_file_splitted) > 1 and
-                input_file_splitted[1] != ''):
-            self.print(f'ERROR invalid s3 path: {input_file_splitted}')
-            return
+        if self.product_type:
+            self.print(f'product type: {self.product_type}')
+            if self.product_type == 'RRSD':
+                product_level = 'L0B'
+            elif self.product_type == 'RSLC':
+                product_level = 'L1'
+            elif self.product_type in ['GCOV', 'GSLC', 'STATIC']:
+                product_level = 'L2'
+            else:
+                print('ERROR product type not supported:'
+                      f' {self.product_type}')
 
         if flag_s3_bucket:
-            bucket_name = input_file_splitted[2]
+            if not bucket_name:
+                bucket_name = input_file_splitted[2]
             self.print(f's3 bucket: {bucket_name}')
-            s3_prefix = '/'.join(input_file_splitted[3:])
+            if self.input_file and len(input_file_splitted) > 3:
+                s3_prefix = '/'.join(input_file_splitted[3:])
+            else:
+                s3_prefix = ''
             self.print(f's3 prefix: {s3_prefix}')
+
+            with plant.PlantIndent():
+                self.print(f'product type: {self.product_type}')
+                self.print(f'cycle number: {self.cycle_number}')
+                self.print(f'track number: {self.track_number}')
+                self.print(f'frame number: {self.frame_number}')
+                self.print(f'track frame database: {self.track_frame_db}')
+
+            if (not s3_prefix and
+                    not bucket_name.startswith('sds-n-cumulus-prod-nisar-products') and
+                    self.product_type and
+                    self.cycle_number and
+                    self.track_number and
+                    self.frame_number and
+                    self.track_frame_db):
+
+                date_str = \
+                    plant_isce3.get_nisar_track_frame_date_from_tfdb(
+                        self.track_number,
+                        self.frame_number,
+                        self.track_frame_db,
+                        self.cycle_number)
+
+                s3_prefix = f'products/{product_level}_L_{
+                    self.product_type}/{date_str}'
+                self.print(f's3 prefix (updated): {s3_prefix}')
+
+            elif (not s3_prefix and
+                  not bucket_name.startswith('sds-n-cumulus-prod-nisar-products') and
+                    self.product_type):
+
+                s3_prefix = f'products/{product_level}_L_{self.product_type}'
+                self.print(f's3 prefix (updated): {s3_prefix}')
+
+            elif (not s3_prefix and
+                    not bucket_name.startswith('sds-n-cumulus-prod-nisar-products')):
+                print('ERROR could not determine the s3 path')
+                return
+
         else:
             bucket_name = None
             s3_prefix = None
@@ -729,16 +811,21 @@ class PlantIsce3BatchProcessing(plant_isce3.PlantIsce3Script):
                 if dict_filename is not None:
                     cycle_number = None
                     track_frame = None
+                    orbit_direction = None
                     if 'cycle_number' in dict_filename.keys():
                         cycle_number = dict_filename['cycle_number']
                         if cycle_number not in cycle_list:
                             cycle_list.append(cycle_number)
                     if ('track_number' in dict_filename.keys() and
                             'frame_number' in dict_filename.keys()):
-                        track_frame = (f"{dict_filename['track_number']}_"
-                                       f"{dict_filename['frame_number']}")
+                        track_frame = (
+                            f"{
+                                dict_filename['track_number']}_" f"{
+                                dict_filename['orbit_direction_char']}_" f"{
+                                dict_filename['frame_number']}")
                         if track_frame not in track_frame_list:
                             track_frame_list.append(track_frame)
+
                     if cycle_number is not None or track_frame is not None:
                         cycle_track_frame_str = f"{cycle_number}_{track_frame}"
                         if cycle_track_frame_str not in products_list:
@@ -869,7 +956,7 @@ class PlantIsce3BatchProcessing(plant_isce3.PlantIsce3Script):
 
         print('## Processing steps 3-5')
 
-        orbit_pass_direction_str = ''
+        orbit_direction_str = ''
 
         for frequency, pol_dict in frequency_epsg_dict.items():
 
@@ -881,8 +968,8 @@ class PlantIsce3BatchProcessing(plant_isce3.PlantIsce3Script):
                           ' user input')
                     continue
 
-                suffix = f'_{frequency}_{pol}{orbit_pass_direction_str}'
-                suffix_rgb = f'_{frequency}{orbit_pass_direction_str}'
+                suffix = f'_{frequency}_{pol}{orbit_direction_str}'
+                suffix_rgb = f'_{frequency}{orbit_direction_str}'
 
                 suffix_list.append(suffix)
 
@@ -894,7 +981,7 @@ class PlantIsce3BatchProcessing(plant_isce3.PlantIsce3Script):
 
                     vrt_file = (f'{self.step_3_directory}/'
                                 f'{self.output_files_prefix}EPSG{epsg}{suffix}'
-                                f'{orbit_pass_direction_str}'
+                                f'{orbit_direction_str}'
                                 f'{self.output_files_suffix}.vrt')
 
                     if (self.step_3_generate_vrt and
@@ -927,7 +1014,7 @@ class PlantIsce3BatchProcessing(plant_isce3.PlantIsce3Script):
                 flag_last_pol = pol == list(pol_dict.keys())[-1]
 
                 vrt_file = self.run_processing_geographic(
-                    tiles_map_by_epsg, bbox_by_epsg, orbit_pass_direction_str,
+                    tiles_map_by_epsg, bbox_by_epsg, orbit_direction_str,
                     frequency, flag_last_pol, suffix_list, suffix_rgb,
                     suffix, list_of_epsg_vrts)
 
@@ -936,18 +1023,18 @@ class PlantIsce3BatchProcessing(plant_isce3.PlantIsce3Script):
                 mosaic_a_vrt_file = (
                     f'{self.step_5_directory}/'
                     f'{self.output_files_prefix}mosaic_A_{pol}'
-                    f'{orbit_pass_direction_str}'
+                    f'{orbit_direction_str}'
                     f'{self.output_files_suffix}.vrt')
                 mosaic_b_vrt_file = (
                     f'{self.step_5_directory}/'
                     f'{self.output_files_prefix}mosaic_B_{pol}'
-                    f'{orbit_pass_direction_str}'
+                    f'{orbit_direction_str}'
                     f'{self.output_files_suffix}.vrt')
 
                 print('    Step 6: KMZ')
                 kmz_file = (f'{self.step_5_directory}/'
                             f'{self.output_files_prefix}mosaic_AB_{pol}'
-                            f'{orbit_pass_direction_str}'
+                            f'{orbit_direction_str}'
                             f'{self.output_files_suffix}.kmz')
 
                 print('pol_vrt_list:', vrt_file)
@@ -965,7 +1052,7 @@ class PlantIsce3BatchProcessing(plant_isce3.PlantIsce3Script):
             for s in self.filename_must_include:
                 print(f'*** filename must include: {s}')
                 if s in path or s in filename:
-
+                    print('*** found!!!')
                     break
             else:
 
@@ -975,11 +1062,13 @@ class PlantIsce3BatchProcessing(plant_isce3.PlantIsce3Script):
                 len(self.filename_must_include_all) > 0):
             flag_all_found = True
             for s in self.filename_must_include_all:
+                print(f'*** filename must include (all): {s}')
                 if s not in path and s not in filename:
                     flag_all_found = False
                     break
             if not flag_all_found:
                 return False
+            print('*** found!!!')
 
         if (self.filename_must_not_include is not None and
                 len(self.filename_must_not_include) > 0):
@@ -1011,12 +1100,38 @@ class PlantIsce3BatchProcessing(plant_isce3.PlantIsce3Script):
                   ' required: QP')
             return False
 
-        if (self.filename_cycle_number is not None and
+        if (self.must_be_mixed_mode and
+                dict_filename['radar_processing_mode'] != 'M'):
+            print('*** not mixed mode')
+            return False
+
+        if (self.must_not_be_mixed_mode and
+                dict_filename['radar_processing_mode'] == 'M'):
+            print('*** mixed mode')
+            return False
+
+        if (self.cycle_number is not None and
                 dict_filename['cycle_number'] !=
-                int(self.filename_cycle_number)):
+                int(self.cycle_number)):
             print('*** filename cycle number:'
                   f' {dict_filename["cycle_number"]},'
-                  f' required cycle number: {self.filename_cycle_number}')
+                  f' required cycle number: {self.cycle_number}')
+            return False
+
+        if (self.orbit_direction is not None and
+                dict_filename['orbit_direction'] !=
+                self.orbit_direction):
+            print('*** filename orbit pass direction:'
+                  f' {dict_filename["orbit_direction"]},'
+                  f' required orbit pass direction: {self.orbit_direction}')
+            return False
+
+        if (self.track_number is not None and
+                'track_number' in dict_filename.keys() and
+                dict_filename['track_number'] != int(self.track_number)):
+            print('*** filename frame number:'
+                  f' {dict_filename["track_number"]},'
+                  f' required frame number: {self.track_number}')
             return False
 
         if (self.frame_number is not None and
@@ -1043,7 +1158,7 @@ class PlantIsce3BatchProcessing(plant_isce3.PlantIsce3Script):
         return True
 
     def run_processing_geographic(
-            self, tiles_map_by_epsg, bbox_by_epsg, orbit_pass_direction_str,
+            self, tiles_map_by_epsg, bbox_by_epsg, orbit_direction_str,
             frequency, flag_last_pol, suffix_list, suffix_rgb,
             suffix, list_of_epsg_vrts):
         mosaic_tiles_map = tiles_map_by_epsg['mosaic']
@@ -1057,7 +1172,7 @@ class PlantIsce3BatchProcessing(plant_isce3.PlantIsce3Script):
             self.step_4_generate_tiles_rgb_kmz,
             self.step_4_generate_tiles_ab_kmz,
             self.step_5_generate_mosaic_vrt,
-            frequency, orbit_pass_direction_str,
+            frequency, orbit_direction_str,
             mosaic_min_lat, mosaic_max_lat,
             mosaic_min_lon, mosaic_max_lon,
             mosaic_tiles_map,
@@ -1120,13 +1235,15 @@ class PlantIsce3BatchProcessing(plant_isce3.PlantIsce3Script):
 
             tiles_map_by_epsg, bbox_by_epsg):
 
-        print('    Step 1: loading datasets from s3 bucket:')
         product_count = 1
         frequency_epsg_dict = {'A': {}, 'B': {}}
 
         mosaic_kmz_file_list = []
 
         if flag_s3_bucket:
+
+            print(f'    Step 1: loading datasets from s3://{bucket_name}/'
+                  f'{s3_prefix}')
 
             creds = plant.load_aws_credentials()
 
@@ -1138,6 +1255,8 @@ class PlantIsce3BatchProcessing(plant_isce3.PlantIsce3Script):
                 Prefix=s3_prefix)
 
         else:
+            print('    Step 1: loading datasets from file(s):'
+                  f' {self.input_file}')
             file_list = glob.glob(self.input_file, recursive=True)
             files_iterator = [os.path.split(f) for f in file_list]
 
@@ -1191,9 +1310,7 @@ class PlantIsce3BatchProcessing(plant_isce3.PlantIsce3Script):
                 continue
 
             cache_hdf5 = None
-            if not flag_s3_bucket:
-                downloaded_file = self.input_file
-            else:
+            if flag_s3_bucket:
                 downloaded_file = os.path.join(self.step_1_directory, f)
                 if (not os.path.isfile(downloaded_file) and
                         not self.step_1_download_hdf5):
@@ -1202,6 +1319,8 @@ class PlantIsce3BatchProcessing(plant_isce3.PlantIsce3Script):
                         os.path.join(self.cache_directory,
                                      f.replace('.h5', '_cache.h5'))
                     print('*** fast access hdf5:', cache_hdf5)
+            else:
+                downloaded_file = self.input_file
 
             print(f'##     Product {product_count}: {basename}'
                   f' (s3 object: {i})')
@@ -1211,19 +1330,28 @@ class PlantIsce3BatchProcessing(plant_isce3.PlantIsce3Script):
                 vsis3_product_path = s3_product_path.replace('s3://',
                                                              '/vsis3/')
 
+            self.nisar_product_obj = None
             if cache_hdf5 is not None and os.path.isfile(cache_hdf5):
                 print(f'        opening cache HDF5 file for fast access:'
                       f' {cache_hdf5}')
                 h5_obj = plant.h5py_file_wrapper(cache_hdf5, swmr=True)
-                self.nisar_product_obj = open_product(cache_hdf5)
+                try:
+                    self.nisar_product_obj = open_product(cache_hdf5)
 
-            elif flag_s3_bucket:
+                except BaseException:
+                    print('WARNING there was an error reading cache file:'
+                          f' {cache_hdf5}. Deleting corrupted file.')
+                    os.remove(cache_hdf5)
 
+            if self.nisar_product_obj is None or flag_s3_bucket:
+
+                print('*** opening product at s3 path:', s3_product_path)
                 h5_obj = plant.h5py_file_wrapper(s3_product_path)
 
                 self.nisar_product_obj = open_product(s3_product_path)
 
-            else:
+            elif self.nisar_product_obj is None:
+                print('*** opening product at:', os.path.join(path, f))
                 h5_obj = plant.h5py_file_wrapper(os.path.join(path, f),
                                                  swmr=True)
                 self.nisar_product_obj = open_product(os.path.join(path, f))
@@ -1232,7 +1360,7 @@ class PlantIsce3BatchProcessing(plant_isce3.PlantIsce3Script):
                 h5_obj)
             current_product_level = plant_isce3.get_nisar_product_level(
                 h5_obj)
-            orbit_pass_direction = plant_isce3.get_nisar_orbit_pass_direction(
+            orbit_direction = plant_isce3.get_nisar_orbit_direction(
                 h5_obj)
 
             if (cache_hdf5 is not None and
@@ -1246,23 +1374,39 @@ class PlantIsce3BatchProcessing(plant_isce3.PlantIsce3Script):
                 h5_obj = hdf5_out_obj
 
                 del self.nisar_product_obj
-                self.nisar_product_obj = open_product(cache_hdf5)
+                try:
+                    self.nisar_product_obj = open_product(cache_hdf5)
+                except BaseException:
+                    print('WARNING there was an error creating cache file:'
+                          f' {cache_hdf5}')
+                    os.remove(cache_hdf5)
 
             absolute_orbit_number = \
                 plant_isce3.get_nisar_product_absolute_orbit_number(h5_obj)
+            print('*** absolute_orbit_number:', absolute_orbit_number)
             cycle_number = plant_isce3.get_nisar_product_cycle_number(h5_obj)
+            print('*** cycle_number:', cycle_number)
             mission_id = plant_isce3.get_nisar_product_mission_id(h5_obj)
+            print('*** mission_id:', mission_id)
             track_number = plant_isce3.get_nisar_product_track_number(h5_obj)
+            print('*** track_number:', track_number)
             if self.product_type != 'RRSD':
                 frame_number = plant_isce3.get_nisar_product_frame_number(
                     h5_obj)
                 if (self.frame_number is not None and
                         frame_number != int(self.frame_number)):
                     continue
+                print('*** frame_number:', frame_number)
             else:
                 frame_number = None
-            is_mixed_mode = plant_isce3.get_nisar_product_is_mixed_mode(h5_obj)
-            is_full_frame = plant_isce3.get_nisar_product_is_full_frame(h5_obj)
+
+            is_mixed_mode = bool(
+                plant_isce3.get_nisar_product_is_mixed_mode(h5_obj))
+            print('*** is_mixed_mode:', is_mixed_mode)
+
+            is_full_frame = bool(
+                plant_isce3.get_nisar_product_is_full_frame(h5_obj))
+            print('*** is_full_frame:', is_full_frame)
 
             zero_doppler_start_time = \
                 plant_isce3.get_nisar_product_zero_doppler_start_time(h5_obj)
@@ -1288,7 +1432,13 @@ class PlantIsce3BatchProcessing(plant_isce3.PlantIsce3Script):
 
             kwargs_product_data_to_backscatter = {}
             kwargs_product_data_to_backscatter_str = ''
-            if current_file_product_type == 'GSLC':
+
+            if (current_file_product_type == 'GSLC' and not
+                    self.rtc_gamma_to_sigma_file and not
+                    self.number_of_looks_file and not
+                    self.elevation_antenna_pattern_file and not
+                    self.noise_equivalent_backscatter_file and not
+                    self.doppler_centroid_file):
                 kwargs_product_data_to_backscatter['square'] = True
                 kwargs_product_data_to_backscatter_str = '--sqrt'
 
@@ -1348,151 +1498,16 @@ class PlantIsce3BatchProcessing(plant_isce3.PlantIsce3Script):
 
             product_count += 1
 
-            png_file = os.path.join(self.step_1_directory,
-                                    f'{basename}_BROWSE.png')
-
-            f_png = f.replace('.h5', '.png')
-            png_s3_prefix = os.path.join(path, f_png)
-
-            if (self.step_1_download_browse_png and
-                    not os.path.isfile(png_file)):
-
-                os.makedirs(os.path.dirname(downloaded_file),
-                            exist_ok=True)
-                print('    Step 1: Downloading browse file (PNG):', f_png)
-                try:
-                    nisar_product_bucket.download_file(png_s3_prefix, f_png)
-                except BaseException:
-                    print('WARNING there was an error downloading file:',
-                          f_png)
-
-                if os.path.isfile(f_png):
-                    os.rename(f_png, png_file)
-
-            if os.path.isfile(png_file):
-                mosaic_kmz_file_list.append(png_file)
-
-            f_kml = f.replace('.h5', '.kml')
-            kml_file = os.path.join(self.step_1_directory,
-                                    f'{basename}_BROWSE.kml')
-            kml_s3_prefix = os.path.join(path, f_kml)
-
-            if (self.step_1_download_kml and
-                    not os.path.isfile(kml_file)):
-
-                os.makedirs(os.path.dirname(downloaded_file),
-                            exist_ok=True)
-                print('    Step 1: Downloading browse file (KML):', f_kml)
-                try:
-                    nisar_product_bucket.download_file(kml_s3_prefix, f_kml)
-
-                except BaseException:
-                    print('WARNING there was an error downloading file:',
-                          f_kml)
-
-                if os.path.isfile(f_kml):
-
-                    s3_product_path_directory = os.path.join('s3://',
-                                                             bucket_name, path)
-
-                    if (orbit_pass_direction == 'Descending' and
-                            epsg is not None and epsg in ['3413', '3031']):
-                        icon = 'https://maps.google.com/mapfiles/kml/paddle/D.png'
-                    elif (orbit_pass_direction == 'Ascending' and
-                            epsg is not None and epsg in ['3413', '3031']):
-                        icon = 'https://maps.google.com/mapfiles/kml/paddle/A.png'
-                    elif (orbit_pass_direction == 'Descending' and
-                            center_lat < 60):
-                        icon = 'https://earth.google.com/images/kml-icons/track-directional/track-9.png'
-                    elif (orbit_pass_direction == 'Ascending' and
-                            center_lat < 60):
-                        icon = 'https://earth.google.com/images/kml-icons/track-directional/track-15.png'
-                    elif (orbit_pass_direction == 'Descending' and
-                            center_lat < 70):
-                        icon = 'https://earth.google.com/images/kml-icons/track-directional/track-10.png'
-                    elif (orbit_pass_direction == 'Ascending' and
-                            center_lat < 70):
-                        icon = 'https://earth.google.com/images/kml-icons/track-directional/track-14.png'
-                    elif orbit_pass_direction == 'Descending':
-                        icon = 'https://earth.google.com/images/kml-icons/track-directional/track-11.png'
-                    elif orbit_pass_direction == 'Ascending':
-                        icon = 'https://earth.google.com/images/kml-icons/track-directional/track-13.png'
-                    else:
-                        raise ValueError('Unrecognized orbit pass direction: '
-                                         f'"{orbit_pass_direction}"')
-
-                    if current_file_product_type in ['GCOV', 'GSLC']:
-                        extra_info = ('<p><b>Input RSLC granule:</b>'
-                                      f' {input_rslc_granule}</p>')
-                        if len(list_of_input_l0b_granules) == 1:
-                            extra_info += ('<p><b>Input L0B granule:</b>'
-                                           f' {list_of_input_l0b_granules[0]}'
-                                           '</p>')
-                        else:
-                            for i, input_l0b_granule in enumerate(
-                                    list_of_input_l0b_granules):
-                                extra_info += \
-                                    (f'<p><b>Input L0B granule {i + 1}:</b>'
-                                     f' {input_l0b_granule}</p>')
-                    else:
-                        extra_info = ''
-
-                    if mission_id == 'NISAR':
-                        cycle_number_no_offset = \
-                            plant_isce3.get_nisar_product_cycle_number(
-                                h5_obj, flag_no_offset=True)
-                        extra_cycle = ('<p><b>Cycle number (without offset):'
-                                       f'</b> {cycle_number_no_offset}</p>')
-                    else:
-                        extra_cycle = ''
-
-                    if epsg is not None:
-                        epsg_str = f'<p><b>EPSG code:</b> {epsg}</p>'
-                    else:
-                        epsg_str = ''
-
-                    kml_placemark_str = f'''  <Placemark>
-      <name></name>
-      <description><![CDATA[
-          <p><b>Product:</b> {basename}</p>
-          <p><b>Product type:</b> {current_file_product_type}</p>{extra_info}
-          <p><b>Orbit pass direction:</b> {orbit_pass_direction}</p>{epsg_str}
-          <p><b>Absolute orbit number:</b> {absolute_orbit_number}</p>
-          <p><b>Cycle number:</b> {cycle_number}</p>{extra_cycle}
-          <p><b>Track number:</b> {track_number}</p>
-          <p><b>Frame number:</b> {frame_number}</p>
-          <p><b>Is mixed mode:</b> {is_mixed_mode}</p>
-          <p><b>Is full frame:</b> {is_full_frame}</p>
-          <p><b>Zero doppler start time:</b> {zero_doppler_start_time}</p>
-          <p><b>Zero doppler end time:</b> {zero_doppler_end_time}</p>
-          <p><b>S3 path:</b> {s3_product_path_directory}</p>
-          <p><b>Center longitude:</b> {center_lon}</p>
-          <p><b>Center latitude:</b> {center_lat}</p>
-      ]]></description>
-      <Style>
-        <IconStyle>
-          <Icon>
-            <href>{icon}</href>
-          </Icon>
-        </IconStyle>
-      </Style>
-      <Point>
-        <coordinates>{center_lon},{center_lat}</coordinates>
-      </Point>
-    </Placemark>
-  </Document>
-                    '''
-
-                    substitute_in_file(
-                        f_kml, kml_file, [f'{basename}.png',
-                                          'overlay image',
-                                          '</Document>'],
-                        [f'{basename}_BROWSE.png', basename,
-                         kml_placemark_str])
-                    os.remove(f_kml)
-
-            if os.path.isfile(kml_file):
-                mosaic_kmz_file_list.append(kml_file)
+            for suffix in ['', '_NATIVE', '_LATLON']:
+                self.download_browse(
+                    bucket_name, mosaic_kmz_file_list, nisar_product_bucket,
+                    path, f, basename, cycle_number, downloaded_file, h5_obj,
+                    current_file_product_type, orbit_direction,
+                    absolute_orbit_number, mission_id, track_number,
+                    frame_number, is_mixed_mode, is_full_frame,
+                    zero_doppler_start_time, zero_doppler_end_time,
+                    epsg, input_rslc_granule, list_of_input_l0b_granules,
+                    center_lon, center_lat, suffix)
 
             if current_product_level != 'L2':
                 epsg = str(4326)
@@ -1518,8 +1533,9 @@ class PlantIsce3BatchProcessing(plant_isce3.PlantIsce3Script):
                     nisar_product_bucket.download_file(objects.key, f)
                     os.rename(f, downloaded_file)
 
-                except BaseException:
-                    print('WARNING there was an error downloading file:', f)
+                except Exception as e:
+                    print('WARNING there was an error downloading file:'
+                          f' {objects.key}: "{e}"')
                     continue
 
             else:
@@ -1695,6 +1711,162 @@ class PlantIsce3BatchProcessing(plant_isce3.PlantIsce3Script):
 
         return frequency_epsg_dict, mosaic_kmz_file_list
 
+    def download_browse(
+            self, bucket_name, mosaic_kmz_file_list, nisar_product_bucket,
+            path, f, basename, cycle_number, downloaded_file, h5_obj,
+            current_file_product_type, orbit_direction,
+            absolute_orbit_number, mission_id, track_number,
+            frame_number, is_mixed_mode, is_full_frame,
+            zero_doppler_start_time, zero_doppler_end_time,
+            epsg, input_rslc_granule, list_of_input_l0b_granules,
+            center_lon, center_lat, suffix):
+        png_file = os.path.join(self.step_1_directory,
+                                f'{basename}_BROWSE{suffix}.png')
+
+        f_png = f.replace('.h5', f'{suffix}.png')
+        png_s3_prefix = os.path.join(path, f_png)
+
+        if (self.step_1_download_browse_png and
+                not os.path.isfile(png_file)):
+
+            os.makedirs(os.path.dirname(downloaded_file),
+                        exist_ok=True)
+            print('    Step 1: Downloading browse file (PNG):', f_png)
+            try:
+                nisar_product_bucket.download_file(png_s3_prefix, f_png)
+            except Exception as e:
+                print('WARNING there was an error downloading file:'
+                      f' {png_s3_prefix}: "{e}"')
+
+            if os.path.isfile(f_png):
+                os.rename(f_png, png_file)
+
+        if os.path.isfile(png_file):
+            mosaic_kmz_file_list.append(png_file)
+
+        if suffix == '_NATIVE':
+            return
+
+        f_kml = f.replace('.h5', f'{suffix}.kml')
+        kml_file = os.path.join(self.step_1_directory,
+                                f'{basename}_BROWSE{suffix}.kml')
+        kml_s3_prefix = os.path.join(path, f_kml)
+
+        if (self.step_1_download_kml and
+                not os.path.isfile(kml_file)):
+
+            os.makedirs(os.path.dirname(downloaded_file),
+                        exist_ok=True)
+            print('    Step 1: Downloading browse file (KML):', f_kml)
+            try:
+                nisar_product_bucket.download_file(kml_s3_prefix, f_kml)
+
+            except Exception as e:
+                print('WARNING there was an error downloading file:'
+                      f' {kml_s3_prefix}: "{e}"')
+
+            if os.path.isfile(f_kml):
+                s3_product_path_directory = \
+                    os.path.join('s3://', bucket_name, path)
+
+                if (orbit_direction == 'Descending' and
+                        epsg is not None and epsg in ['3413', '3031']):
+                    icon = 'https://maps.google.com/mapfiles/kml/paddle/D.png'
+                elif (orbit_direction == 'Ascending' and
+                      epsg is not None and epsg in ['3413', '3031']):
+                    icon = 'https://maps.google.com/mapfiles/kml/paddle/A.png'
+                elif (orbit_direction == 'Descending' and
+                      center_lat < 60):
+                    icon = 'https://earth.google.com/images/kml-icons/track-directional/track-9.png'
+                elif (orbit_direction == 'Ascending' and
+                      center_lat < 60):
+                    icon = 'https://earth.google.com/images/kml-icons/track-directional/track-15.png'
+                elif (orbit_direction == 'Descending' and
+                      center_lat < 70):
+                    icon = 'https://earth.google.com/images/kml-icons/track-directional/track-10.png'
+                elif (orbit_direction == 'Ascending' and
+                      center_lat < 70):
+                    icon = 'https://earth.google.com/images/kml-icons/track-directional/track-14.png'
+                elif orbit_direction == 'Descending':
+                    icon = 'https://earth.google.com/images/kml-icons/track-directional/track-11.png'
+                elif orbit_direction == 'Ascending':
+                    icon = 'https://earth.google.com/images/kml-icons/track-directional/track-13.png'
+                else:
+                    raise ValueError('Unrecognized orbit pass direction: '
+                                     f'"{orbit_direction}"')
+
+                if current_file_product_type in ['GCOV', 'GSLC']:
+                    extra_info = ('<p><b>Input RSLC granule:</b>'
+                                  f' {input_rslc_granule}</p>')
+                    if len(list_of_input_l0b_granules) == 1:
+                        extra_info += ('<p><b>Input L0B granule:</b>'
+                                       f' {list_of_input_l0b_granules[0]}'
+                                       '</p>')
+                    else:
+                        for i, input_l0b_granule in enumerate(
+                                list_of_input_l0b_granules):
+                            extra_info += \
+                                (f'<p><b>Input L0B granule {i + 1}:</b>'
+                                 f' {input_l0b_granule}</p>')
+                else:
+                    extra_info = ''
+
+                if mission_id == 'NISAR':
+                    cycle_number_no_offset = \
+                        plant_isce3.get_nisar_product_cycle_number(
+                            h5_obj, flag_no_offset=True)
+                    extra_cycle = ('<p><b>Cycle number (without offset):'
+                                   f'</b> {cycle_number_no_offset}</p>')
+                else:
+                    extra_cycle = ''
+
+                if epsg is not None:
+                    epsg_str = f'<p><b>EPSG code:</b> {epsg}</p>'
+                else:
+                    epsg_str = ''
+
+                kml_placemark_str = f'''  <Placemark>
+        <name></name>
+        <description><![CDATA[
+            <p><b>Product:</b> {basename}</p>
+            <p><b>Product type:</b> {current_file_product_type}</p>{extra_info}
+            <p><b>Orbit pass direction:</b> {orbit_direction}</p>{epsg_str}
+            <p><b>Absolute orbit number:</b> {absolute_orbit_number}</p>
+            <p><b>Cycle number:</b> {cycle_number}</p>{extra_cycle}
+            <p><b>Track number:</b> {track_number}</p>
+            <p><b>Frame number:</b> {frame_number}</p>
+            <p><b>Is mixed mode:</b> {is_mixed_mode}</p>
+            <p><b>Is full frame:</b> {is_full_frame}</p>
+            <p><b>Zero doppler start time:</b> {zero_doppler_start_time}</p>
+            <p><b>Zero doppler end time:</b> {zero_doppler_end_time}</p>
+            <p><b>S3 path:</b> {s3_product_path_directory}</p>
+            <p><b>Center longitude:</b> {center_lon}</p>
+            <p><b>Center latitude:</b> {center_lat}</p>
+        ]]></description>
+        <Style>
+            <IconStyle>
+            <Icon>
+                <href>{icon}</href>
+            </Icon>
+            </IconStyle>
+        </Style>
+        <Point>
+            <coordinates>{center_lon},{center_lat}</coordinates>
+        </Point>
+        </Placemark>
+    </Document>
+                        '''
+
+                substitute_in_file(
+                    f_kml, kml_file,
+                    [f'{basename}{suffix}.png', 'overlay image', '</Document>'],
+                    [f'{basename}_BROWSE{suffix}.png', basename, kml_placemark_str])
+
+                os.remove(f_kml)
+
+        if os.path.isfile(kml_file):
+            mosaic_kmz_file_list.append(kml_file)
+
     def get_polygon_parameters(self, product_polygon):
         min_lon, max_lon, min_lat, max_lat = \
             product_polygon.GetEnvelope()
@@ -1830,7 +2002,17 @@ class PlantIsce3BatchProcessing(plant_isce3.PlantIsce3Script):
 
         nlooks_y, nlooks_x = self.get_nlooks(frequency=frequency)
 
-        if nlooks_y != 1 or nlooks_x != 1:
+        if (self.rtc_gamma_to_sigma_file):
+            suffix = (f'_{frequency}_rtc_gamma_to_sigma')
+        elif (self.number_of_looks_file):
+            suffix = (f'_{frequency}_number_of_looks')
+        elif (self.elevation_antenna_pattern_file):
+            suffix = (f'_{frequency}_elevation_antenna_pattern')
+        elif (self.noise_equivalent_backscatter_file):
+            suffix = (f'_{frequency}_noise_equivalent_backscatter')
+        elif (self.doppler_centroid_file):
+            suffix = (f'_{frequency}_doppler_centroid')
+        elif nlooks_y != 1 or nlooks_x != 1:
             suffix_ml = f'_ml_{nlooks_y}_{nlooks_x}'
             suffix = (f'_{frequency}{suffix_ml}')
         else:
@@ -1910,14 +2092,13 @@ class PlantIsce3BatchProcessing(plant_isce3.PlantIsce3Script):
                         ignore_noise=True,
                         png_prefix=basename + "_",
 
-                        generate_elevation_profiles=True,
                         load_processed_backscatter_image=True,
                         save_multilooked_backscatter_image=True,
                         save_processed_backscatter_image=True,
                         save_multilooked_backscatter_png=True,
                         save_processed_backscatter_png=True,
                         save_profile_plot_png=True,
-                        create_plots_with_predefined_thresholds=True,
+                        create_plots_with_predefined_thresholds=self.flag_create_plots_with_predefined_thresholds,
                         nlooks_x=nlooks_x,
                         nlooks_y=nlooks_y,
                         **eap_kwargs)
@@ -1937,14 +2118,28 @@ class PlantIsce3BatchProcessing(plant_isce3.PlantIsce3Script):
                 print('WARNING The EAP analysis did not complete successfully'
                       ' after 3 attempts. Skipping.')
 
-        masked_data_kwargs = {
-            'masked_data_file': self.masked_data_file,
-            'data_file': not self.masked_data_file
-        }
+        masked_data_kwargs = {}
 
         if self.masked_data_file:
+            masked_data_kwargs['masked_data_file'] = True
             masked_data_kwargs_str = '--masked-data'
+        elif self.rtc_gamma_to_sigma_file:
+            masked_data_kwargs['rtc_gamma_to_sigma_file'] = True
+            masked_data_kwargs_str = '--rtc-gamma-to-sigma'
+        elif self.number_of_looks_file:
+            masked_data_kwargs['number_of_looks_file'] = True
+            masked_data_kwargs_str = '--number-of-looks'
+        elif self.elevation_antenna_pattern_file:
+            masked_data_kwargs['elevation_antenna_pattern_file'] = True
+            masked_data_kwargs_str = '--elevation-antenna-pattern'
+        elif self.noise_equivalent_backscatter_file:
+            masked_data_kwargs['noise_equivalent_backscatter_file'] = True
+            masked_data_kwargs_str = '--noise-equivalent-backscatter'
+        elif self.doppler_centroid_file:
+            masked_data_kwargs['doppler_centroid_file'] = True
+            masked_data_kwargs_str = '--doppler-centroid'
         else:
+            masked_data_kwargs['data_file'] = True
             masked_data_kwargs_str = '--data'
 
         bands_rgb_kwargs = {}
@@ -1991,6 +2186,7 @@ class PlantIsce3BatchProcessing(plant_isce3.PlantIsce3Script):
                      f' --nlooks-y {nlooks_y} --output-file {output_file_pol}'
                      f' --force --band {band} {masked_data_kwargs_str}'
                      f' {kwargs_product_data_to_backscatter_str}')
+
                 p = subprocess.Popen(command, shell=True)
                 processes.append(p)
 
@@ -2106,7 +2302,7 @@ class PlantIsce3BatchProcessing(plant_isce3.PlantIsce3Script):
                      flag_generate_tiles_kmz,
                      flag_generate_tiles_rgb_kmz,
                      flag_generate_tiles_ab_kmz, flag_vrts,
-                     frequency, orbit_pass_direction_str,
+                     frequency, orbit_direction_str,
                      min_lat, max_lat, min_lon, max_lon,
                      tiles_map, flag_last_pol, suffix_list, suffix_rgb,
 
@@ -2178,6 +2374,7 @@ class PlantIsce3BatchProcessing(plant_isce3.PlantIsce3Script):
                          f' --force --in-null nan --out-null nan'
                          f' --of "{cog_str}" --log-enabled'
                          f' --interp average --out-projection wgs84')
+
                     p = subprocess.Popen(command, shell=True)
                     processes.append((p, tile_file))
                     while len(processes) >= self.n_parallel_processes:
@@ -2206,11 +2403,9 @@ class PlantIsce3BatchProcessing(plant_isce3.PlantIsce3Script):
                                      out_projection='wgs84')
 
                         file_list.append(tile_file)
-                    except BaseException:
+                    except Exception:
                         error_message = plant.get_error_message()
                         print(error_message.replace('ERROR', 'WARNING'))
-
-                        pass
 
             if flag_generate_tiles_parallel and len(processes) > 0:
 
@@ -2255,7 +2450,7 @@ class PlantIsce3BatchProcessing(plant_isce3.PlantIsce3Script):
                     f'{output_dir_prefix}_tiles_ab',
                     f'{self.output_files_prefix}{self.product_type}_{lat_str}'
                     f'_{lon_str}_AB'
-                    f'_HH{orbit_pass_direction_str}{self.output_files_suffix}'
+                    f'_HH{orbit_direction_str}{self.output_files_suffix}'
                     '.kmz')
 
                 if (flag_generate_tiles_kmz and

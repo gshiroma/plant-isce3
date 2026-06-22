@@ -51,7 +51,7 @@ class RawBase(Base, family='nisar.productreader.raw'):
         '''
         try:
             frequencyList = self.frequencies
-        except:
+        except (AttributeError, KeyError):
             raise RuntimeError('Cannot determine list of available frequencies'
                 + ' without parsing Product Identification')
 
