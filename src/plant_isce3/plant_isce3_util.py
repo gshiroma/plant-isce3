@@ -13,6 +13,7 @@ import isce3
 
 import geopandas as gpd
 from shapely.geometry import Polygon
+from datetime import datetime
 
 from plant_isce3.readers import open_product
 
@@ -150,6 +151,23 @@ def get_parser():
                        help=("Extract the RTC gamma to sigma layer from the"
                              " product"))
 
+    group.add_argument('--eap',
+                       '--elevation-antenna-patter',
+                       dest='elevation_antenna_pattern_file',
+                       action='store_true',
+                       help=("Extract elevation antenna pattern (EAP) layer."))
+
+    group.add_argument('--neb',
+                       '--noise-equivalent-backscatter',
+                       dest='noise_equivalent_backscatter_file',
+                       action='store_true',
+                       help=("Extract noise equivalent backscatter layer."))
+
+    group.add_argument('--doppler-centroid',
+                       dest='doppler_centroid_file',
+                       action='store_true',
+                       help=("Extract Doppler centroid layer."))
+
     group.add_argument('--orbit-kml',
                        dest='orbit_kml_file',
                        action='store_true',
@@ -248,6 +266,12 @@ def get_parser():
                         ' available frequencies. Requires the output'
                         ' directory argument: "--output-dir" or "--od"')
 
+    parser.add_argument('--zero-doppler-datetime-selection',
+                        dest='zero_doppler_datetime_selection',
+                        nargs=2,
+                        type=str,
+                        help='Zero-Doppler datetime selection')
+
     return parser
 
 
@@ -307,12 +331,12 @@ class PlantIsce3Util(plant_isce3.PlantIsce3Script):
             sys.exit(1)
             return
 
+        plant_product_obj = self.load_product()
         if self.separate_pol or self.separate_freq:
 
             if not self.output_dir:
                 self.output_dir = '.'
 
-            plant_product_obj = self.load_product()
             if (plant_product_obj.sensor_name != 'NISAR'):
                 self.print('ERROR the options --separate-pol and'
                            ' --separate-freq are only available for'
@@ -410,8 +434,9 @@ class PlantIsce3Util(plant_isce3.PlantIsce3Script):
                 (self.flag_all_layers or self.flag_all_secondary_layers)):
             self.parser.print_usage()
             self.print('ERROR this script only accepts --output-dir or'
-                       ' --output-ext in --separate-pol or'
-                       ' --separate-freq modes')
+                       ' --output-ext in --separate-pol,'
+                       ' --separate-freq, --all-layers, and'
+                       ' --all-secondary-layers modes')
             sys.exit(1)
             return
         return self.run_util()
@@ -423,6 +448,8 @@ class PlantIsce3Util(plant_isce3.PlantIsce3Script):
             self.print('Operation cancelled.', 1)
             return
 
+        plant_product_obj = self.load_product()
+
         if (not self.input_file.endswith('.h5') and
                 not self.input_file.endswith('.nc') and
                 not self.input_file.endswith('.SAFE') and
@@ -432,7 +459,6 @@ class PlantIsce3Util(plant_isce3.PlantIsce3Script):
             plant.append_output_file(self.output_file)
             return self.output_file
 
-        plant_product_obj = self.load_product()
         if self.orbit_kml_file:
             self.save_orbit_kml(plant_product_obj)
 
@@ -534,6 +560,59 @@ class PlantIsce3Util(plant_isce3.PlantIsce3Script):
             freq_pol_dict = {self.frequency:
                              nisar_product_obj.polarizations[self.frequency]}
 
+        if self.zero_doppler_datetime_selection is not None:
+            if self.select_row is not None:
+                print('ERROR select row (--row/--rows) must be empty to use'
+                      ' zero-Doppler selection')
+                return
+
+            zero_doppler_datetime_selection_list = \
+                self.zero_doppler_datetime_selection
+
+            kwargs_get_radar_grid = {}
+            if self.frequency is not None:
+                kwargs_get_radar_grid['frequency'] = self.frequency
+
+            radar_grid = plant_product_obj.get_radar_grid(
+                **kwargs_get_radar_grid)
+            epoch = radar_grid.ref_epoch
+
+            start_datetime = datetime.fromisoformat(
+                zero_doppler_datetime_selection_list[0])
+            end_datetime = datetime.fromisoformat(
+                zero_doppler_datetime_selection_list[1])
+            epoch_datetime = datetime.fromisoformat(
+                epoch.isoformat())
+            az_time_line_start = int(radar_grid.azimuth_index(
+                (start_datetime - epoch_datetime).total_seconds()))
+            az_time_line_end = int(radar_grid.azimuth_index(
+                (end_datetime - epoch_datetime).total_seconds()))
+
+            print('zero-Doppler datetime selection:')
+            with plant.PlantIndent():
+                print('Start datetime:', start_datetime)
+                print('End datetime:', end_datetime)
+                print('Epoch datetime:', epoch_datetime)
+                print('Azimuth line start:', az_time_line_start)
+                print('Azimuth line end:', az_time_line_end)
+
+            self.select_row = \
+                f'{az_time_line_start}:{az_time_line_end + 1}'
+            self.plant_transform_obj.select_row = \
+                f'{az_time_line_start}:{az_time_line_end + 1}'
+
+        metadata_path = nisar_product_obj.MetadataPath
+        pol_list = nisar_product_obj.polarizations[self.frequency]
+        prefix = self.file_prefix
+
+        if self.output_ext:
+            ext = self.output_ext
+        else:
+            ext = 'tif'
+
+        if ext.startswith('.'):
+            ext = ext[1:]
+
         if self.mask_file:
             self.save_mask(nisar_product_obj)
 
@@ -555,9 +634,36 @@ class PlantIsce3Util(plant_isce3.PlantIsce3Script):
             self.save_data(plant_product_obj, nisar_product_obj,
                            masked=True)
 
+        elif self.elevation_antenna_pattern_file:
+            self.save_lut(
+                f'{metadata_path}/calibrationInformation/'
+                f'frequency{self.frequency}/'
+                'elevationAntennaPattern/{pol}',
+                pol_list=pol_list,
+                force=True)
+
+        elif self.noise_equivalent_backscatter_file:
+            self.save_lut(
+                f'{metadata_path}/calibrationInformation/'
+                f'frequency{self.frequency}/'
+                'noiseEquivalentBackscatter/{pol}',
+                pol_list=pol_list,
+                force=True)
+
+        elif self.doppler_centroid_file:
+
+            self.save_lut(
+                f'{metadata_path}/processingInformation/'
+                f'parameters/frequency{self.frequency}/'
+                'dopplerCentroid',
+                force=True)
+
         elif self.runconfig_file:
             self.save_runconfig_file(nisar_product_obj)
 
+        elif (not self.output_file.endswith('.h5') and
+                not self.output_file.endswith('.nc')):
+            self.save_data(plant_product_obj, nisar_product_obj)
         else:
             if self.input_file != self.output_file:
 
@@ -995,18 +1101,22 @@ class PlantIsce3Util(plant_isce3.PlantIsce3Script):
                     self.output_dir,
                     f'{prefix}{static_layer}{suffix}.{ext}')
 
-                if 'layoverShadowMask' in static_layer:
+                try:
+                    if static_layer == 'layoverShadowMask':
 
-                    self.save_layover_shadow_mask(
-                        nisar_product_obj=nisar_product_obj)
-                    continue
-                if 'waterMask' in static_layer:
+                        self.save_layover_shadow_mask(
+                            nisar_product_obj=nisar_product_obj)
+                        continue
+                    if static_layer == 'waterMask':
 
-                    self.save_binary_water_mask(
-                        nisar_product_obj=nisar_product_obj)
-                    continue
+                        self.save_binary_water_mask(
+                            nisar_product_obj=nisar_product_obj)
+                        continue
 
-                self.save_nisar_layer(static_layer, nisar_product_obj)
+                    self.save_nisar_layer(static_layer, nisar_product_obj)
+                except Exception as e:
+                    print('WARNING there was an error saving static layer'
+                          f' {static_layer}. Error message: "{e}"')
 
             return
 
@@ -1279,8 +1389,8 @@ class PlantIsce3Util(plant_isce3.PlantIsce3Script):
             image_obj,
             snap_to_multilook_grid=True,
             null=255,
-            nlooks_median=[self.nlooks_az,
-                           self.nlooks_rg])
+
+            nlooks=[self.nlooks_az, self.nlooks_rg])
         del image_obj
 
         mask_array_obj.image = np.asarray(mask_array_obj.image,
@@ -1325,7 +1435,8 @@ class PlantIsce3Util(plant_isce3.PlantIsce3Script):
         if self.nlooks_az != 1 or self.nlooks_rg != 1:
 
             plant.filter(image_obj, output_file=self.output_file,
-                         nlooks_median=[self.nlooks_az, self.nlooks_rg],
+
+                         nlooks=[self.nlooks_az, self.nlooks_rg],
                          null=255,
                          force=self.force)
 
@@ -1344,7 +1455,8 @@ class PlantIsce3Util(plant_isce3.PlantIsce3Script):
         if self.nlooks_az != 1 or self.nlooks_rg != 1:
 
             plant.filter(image_obj, output_file=self.output_file,
-                         nlooks_median=[self.nlooks_az, self.nlooks_rg],
+
+                         nlooks=[self.nlooks_az, self.nlooks_rg],
                          null=255,
                          force=self.force)
 
@@ -1354,18 +1466,26 @@ class PlantIsce3Util(plant_isce3.PlantIsce3Script):
                             out_null=255, ctable=binary_water_mask_ctable)
         plant.append_output_file(self.output_file)
 
-    def save_lut(self, h5_path, pol_list=[], flag_skip_if_error=True):
+    def save_lut(self, h5_path, pol_list=[], flag_skip_if_error=True,
+                 force=None):
+        print('*** save_lut() called with pol_list:', pol_list)
         if '{pol}' in h5_path:
+            output_file_orig = self.output_file
             for pol in pol_list:
-                output_file_orig = self.output_file
-                self.output_file = self.output_file.replace('{pol}', pol)
-                self.save_lut(h5_path.replace('{pol}', pol))
-                self.output_file = output_file_orig
-                return
+                self.output_file = output_file_orig.replace('{pol}', pol)
+                print('*** saving LUT:', h5_path.replace('{pol}', pol))
+                self.save_lut(h5_path.replace('{pol}', pol), force=force)
+            self.output_file = output_file_orig
+            return
+
+        if force is None:
+            force = self.force
+
         ref = f'NETCDF:{self.input_file}:{h5_path}'
         try:
             image_obj = plant.read_image(ref)
-            self.save_image(image_obj, output_file=self.output_file)
+            self.save_image(image_obj, output_file=self.output_file,
+                            force=force)
             plant.append_output_file(self.output_file)
         except BaseException:
             if flag_skip_if_error:

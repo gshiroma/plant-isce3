@@ -5,6 +5,7 @@ import datetime
 import json
 import gc
 import configparser
+import geopandas as gpd
 
 import plant_isce3
 import importlib
@@ -29,8 +30,16 @@ DEFAULT_ISCE3_TEMPORARY_FORMAT = 'GTiff'
 
 
 def add_arguments(parser,
+                  product_type=0,
+
                   abs_cal_factor=0,
                   burst_ids=0,
+
+                  track_number=0,
+                  orbit_direction=0,
+                  frame_number=0,
+                  cycle_number=0,
+                  track_frame_db=0,
 
                   geocode_cov_options=0,
 
@@ -78,6 +87,13 @@ def add_arguments(parser,
 
                   tec_files=0):
 
+    if product_type:
+        parser.add_argument('--product-type',
+                            choices=['GCOV', 'GSLC', 'STATIC', 'RSLC', 'RRSD'],
+                            type=str,
+                            dest='product_type',
+                            help='Product type')
+
     if abs_cal_factor:
         parser.add_argument('--abs-cal-factor',
                             '--abs-calibration-factor',
@@ -96,6 +112,42 @@ def add_arguments(parser,
                             required=burst_ids == 2,
                             help=('Sentinel-1 burst IDs (only applicable for'
                                   ' Sentinel-1 datasets).'))
+    if track_number:
+        parser.add_argument('--track',
+                            '--track-number',
+                            type=int,
+                            dest='track_number',
+                            help='Track number')
+
+    if orbit_direction:
+        parser.add_argument('--orbit-direction',
+                            '--orbit-pass-direction',
+                            choices=['Ascending', 'Descending'],
+                            type=str,
+                            dest='orbit_direction',
+                            help='Orbit pass direction for filename filtering')
+
+    if frame_number:
+        parser.add_argument('--frame',
+                            '--frame-number',
+                            type=int,
+                            dest='frame_number',
+                            help='Frame number')
+
+    if cycle_number:
+        parser.add_argument('--cycle',
+                            '--cycle-number',
+                            type=int,
+                            dest='cycle_number',
+                            help='Cycle number')
+
+    if track_frame_db:
+        parser.add_argument('--tfdb',
+                            '--track-frame-db',
+                            '--track-frame-database',
+                            type=str,
+                            dest='track_frame_db',
+                            help='Track-frame database (TFDB) file')
 
     if (geocode_cov_options or
             data_interp_method or
@@ -540,13 +592,21 @@ def get_nisar_product_type(h5_obj):
     return get_nisar_identification_scalar(h5_obj, 'productType')
 
 
-def get_nisar_product_bounding_polygon(h5_obj, flag_as_list=False):
+def get_nisar_product_bounding_polygon(h5_obj, flag_as_list=False,
+                                       flag_as_shapely_obj=False):
+
+    if flag_as_list and flag_as_shapely_obj:
+        print('ERROR only one option is allowed:'
+              ' `flag_as_shapely_obj` or `flag_as_list`')
 
     polygon_str = \
         get_nisar_identification_scalar(h5_obj, 'boundingPolygon')
 
-    if not flag_as_list:
+    if not flag_as_list or flag_as_shapely_obj:
         return polygon_str
+
+    if flag_as_shapely_obj:
+        return shapely.wkt.loads(polygon_str)
 
     polygon_str = polygon_str.replace('POLYGON', '')
     polygon_str_ref = ''
@@ -568,7 +628,7 @@ def get_nisar_product_level(h5_obj):
     return get_nisar_identification_scalar(h5_obj, 'productLevel')
 
 
-def get_nisar_orbit_pass_direction(h5_obj):
+def get_nisar_orbit_direction(h5_obj):
 
     return get_nisar_identification_scalar(h5_obj, 'orbitPassDirection')
 
@@ -633,6 +693,18 @@ def get_nisar_product_zero_doppler_start_time(h5_obj):
 def get_nisar_product_zero_doppler_end_time(h5_obj):
 
     return get_nisar_identification_scalar(h5_obj, 'zeroDopplerEndTime')
+
+
+def get_input_l0b_granules_from_rslc(h5_obj):
+
+    input_l0b_granules = \
+        h5_obj['/science/LSAR/RSLC/metadata/'
+               'processingInformation/inputs/l0bGranules'][()]
+    input_l0b_granules = [d.decode() for d in input_l0b_granules]
+    if len(input_l0b_granules) == 1:
+        input_l0b_granules = input_l0b_granules[0]
+
+    return input_l0b_granules
 
 
 def multilook_isce3(input_raster_file, output_file,
@@ -716,6 +788,7 @@ def multilook_isce3(input_raster_file, output_file,
                     multilooked_image = block_array
 
                 else:
+
                     is_finite_array = np.isfinite(block_array)
 
                     block_array[~is_finite_array] = 0
@@ -1402,10 +1475,10 @@ class PlantIsce3Sensor():
             product_level = get_nisar_product_level(h5_obj)
         return product_level
 
-    def get_nisar_orbit_pass_direction(self):
+    def get_nisar_orbit_direction(self):
         with plant.h5py_file_wrapper(self.input_file, 'r') as h5_obj:
-            orbit_pass_direction = get_nisar_orbit_pass_direction(h5_obj)
-        return orbit_pass_direction
+            orbit_direction = get_nisar_orbit_direction(h5_obj)
+        return orbit_direction
 
     def get_nisar_granule_id(self):
         with plant.h5py_file_wrapper(self.input_file, 'r') as h5_obj:
@@ -2528,9 +2601,9 @@ class PlantIsce3Script(plant.PlantScript):
                          metadata=metadata_dict,
                          force=True)
 
-        image_mean = np.nanmedian(image_profile)
-        print(f'image mean ({pol}): {image_mean}')
-        if not np.isfinite(image_mean):
+        image_median = np.nanmedian(image_profile)
+        print(f'image mean ({pol}): {image_median}')
+        if not np.isfinite(image_median):
             image_profile_file = os.path.join(
                 output_dir, 'elevation',
                 f'{prefix}profile_{freq}_{pol}_with_offset_error.tif')
@@ -2539,14 +2612,14 @@ class PlantIsce3Script(plant.PlantScript):
                              metadata=metadata_dict,
                              force=True)
             print(f'ERROR image mean for frequency {freq},'
-                  f' polarization {pol} is not finite: {image_mean}')
+                  f' polarization {pol} is not finite: {image_median}')
             return
 
         if flag_phase:
             image_profile = np.angle(
-                image_profile * np.exp(-1j * np.angle(image_mean)))
+                image_profile * np.exp(-1j * np.angle(image_median)))
         else:
-            image_profile /= image_mean
+            image_profile /= image_median
 
         image_profile_file = os.path.join(
             output_dir, 'elevation',
@@ -2557,7 +2630,7 @@ class PlantIsce3Script(plant.PlantScript):
                          metadata=metadata_dict,
                          force=True)
 
-        return elevation_profile, image_profile
+        return elevation_profile, image_profile, image_median
 
 
 def parse_nisar_product_filename(filename_with_extension):
@@ -2627,7 +2700,7 @@ def parse_nisar_product_filename(filename_with_extension):
     if product_type == 'RRSD':
         radar_configuration_mode = splitted_filename[7][0:3]
         ret_dict['radar_configuration_mode'] = radar_configuration_mode
-        radar_processing_mode = splitted_filename[7][4]
+        radar_processing_mode = splitted_filename[7][3]
         ret_dict['radar_processing_mode'] = radar_processing_mode
         offset = 8
     else:
@@ -3041,6 +3114,52 @@ def execute(command,
     return ret
 
 
+def get_nisar_dates_by_cycle(cycle_number):
+    ascending_node_datetime = \
+        datetime.datetime.fromisoformat('20250911T060000')
+
+    start_datetime = \
+        (ascending_node_datetime +
+         datetime.timedelta(days=12 * (cycle_number - 1)))
+    end_datetime = \
+        (ascending_node_datetime +
+         datetime.timedelta(days=12 * (cycle_number)))
+
+    return start_datetime, end_datetime
+
+
+def get_nisar_track_frame_date_from_tfdb(
+        track_number, frame_number, track_frame_db_file, cycle_number,
+        string_format='%Y/%m/%d'):
+    gdf = gpd.read_file(track_frame_db_file)
+    start_cy_gdf = gdf[
+        (gdf["track"] == track_number) &
+        (gdf["frame"] == frame_number)]['startCY']
+    start_cy = float(start_cy_gdf)
+    ascending_node_datetime = \
+        datetime.datetime.fromisoformat('20250911T060000')
+    start_datetime = \
+        (ascending_node_datetime +
+         datetime.timedelta(seconds=start_cy) +
+         datetime.timedelta(days=12 * cycle_number))
+
+    if string_format is not None:
+        return start_datetime.strftime(string_format)
+
+    return start_datetime
+
+
+def get_nisar_dates_by_cycle_str_list(cycle_number):
+    start_datetime, end_datetime = get_nisar_dates_by_cycle(cycle_number)
+
+    date_strings = [
+        (start_datetime + datetime.timedelta(days=i)).strftime("%Y/%m/%d")
+        for i in range((end_datetime.date() -
+                        start_datetime.date()).days + 1)]
+
+    return date_strings
+
+
 class ModuleWrapper(object):
 
     def __init__(self, module_name, *args, ref=None, **kwargs):
@@ -3068,7 +3187,7 @@ class ModuleWrapper(object):
             return
 
         flag_mute = kwargs.get('flag_mute', None)
-        verbose = kwargs.get('verbose', True) and not (flag_mute is True)
+        verbose = kwargs.get('verbose', True) and not flag_mute
         if self._ref is not None:
 
             ret = self._ref.execute(self._command, verbose=verbose)

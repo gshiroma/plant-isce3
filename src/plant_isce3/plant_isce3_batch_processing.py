@@ -546,8 +546,8 @@ class PlantIsce3BatchProcessing(plant_isce3.PlantIsce3Script):
                         self.track_frame_db,
                         self.cycle_number)
 
-                s3_prefix = f'products/{product_level}_L_{
-                    self.product_type}/{date_str}'
+                s3_prefix = (f'products/{product_level}_L'
+                             f'_{self.product_type}/{date_str}')
                 self.print(f's3 prefix (updated): {s3_prefix}')
 
             elif (not s3_prefix and
@@ -818,11 +818,10 @@ class PlantIsce3BatchProcessing(plant_isce3.PlantIsce3Script):
                             cycle_list.append(cycle_number)
                     if ('track_number' in dict_filename.keys() and
                             'frame_number' in dict_filename.keys()):
-                        track_frame = (
-                            f"{
-                                dict_filename['track_number']}_" f"{
-                                dict_filename['orbit_direction_char']}_" f"{
-                                dict_filename['frame_number']}")
+                        track_frame = \
+                            (f"{dict_filename['track_number']}_"
+                             f"{dict_filename['orbit_direction_char']}_"
+                             f"{dict_filename['frame_number']}")
                         if track_frame not in track_frame_list:
                             track_frame_list.append(track_frame)
 
@@ -1052,7 +1051,7 @@ class PlantIsce3BatchProcessing(plant_isce3.PlantIsce3Script):
             for s in self.filename_must_include:
                 print(f'*** filename must include: {s}')
                 if s in path or s in filename:
-                    print('*** found!!!')
+
                     break
             else:
 
@@ -1068,7 +1067,6 @@ class PlantIsce3BatchProcessing(plant_isce3.PlantIsce3Script):
                     break
             if not flag_all_found:
                 return False
-            print('*** found!!!')
 
         if (self.filename_must_not_include is not None and
                 len(self.filename_must_not_include) > 0):
@@ -1102,12 +1100,12 @@ class PlantIsce3BatchProcessing(plant_isce3.PlantIsce3Script):
 
         if (self.must_be_mixed_mode and
                 dict_filename['radar_processing_mode'] != 'M'):
-            print('*** not mixed mode')
+
             return False
 
         if (self.must_not_be_mixed_mode and
                 dict_filename['radar_processing_mode'] == 'M'):
-            print('*** mixed mode')
+
             return False
 
         if (self.cycle_number is not None and
