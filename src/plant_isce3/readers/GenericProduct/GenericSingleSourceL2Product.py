@@ -61,7 +61,7 @@ class GenericSingleSourceL2Product(
 
         try:
             frequencyList = self.frequencies
-        except:
+        except (AttributeError, KeyError):
 
             error_msg = ('Cannot determine list of available frequencies'
                          ' without parsing Product Identification')

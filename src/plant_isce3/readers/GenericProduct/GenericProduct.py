@@ -71,7 +71,7 @@ class GenericProduct(Base, family='nisar.productreader.product'):
 
         try:
             frequencyList = self.frequencies
-        except:
+        except (AttributeError, KeyError):
             self.error_channel.log(
                 'Cannot determine list of available frequencies'
                 ' without parsing Product Identification')

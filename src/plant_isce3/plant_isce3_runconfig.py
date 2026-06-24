@@ -31,6 +31,13 @@ def get_parser():
                               orbit_files=1,
                               tec_files=1)
 
+    parser.add_argument('--product-type',
+                        choices=['GCOV', 'GSLC'],
+                        type=str,
+                        dest='product_type',
+                        default='GCOV',
+                        help='Product type')
+
     parser.add_argument('--runconfig',
                         dest='runconfig',
                         type=str,
@@ -47,11 +54,6 @@ def get_parser():
                         dest='sas_output_file',
                         type=str,
                         help='SAS output file.')
-
-    parser.add_argument('--gslc',
-                        action='store_true',
-                        dest='flag_gslc',
-                        help='Generated geocoded SLC runconfig')
 
     parser.add_argument('--rtc-min-value-db',
                         dest='rtc_min_value_db',
@@ -120,11 +122,6 @@ class PlantIsce3Runconfig(plant_isce3.PlantIsce3Script):
             self.print('Operation cancelled.', 1)
             return
 
-        if self.flag_gslc:
-            self.workflow_name = 'GSLC'
-        else:
-            self.workflow_name = 'GCOV'
-
         plant_product_obj = self.load_product()
         radar_grid = plant_product_obj.get_radar_grid_ml()
         orbit = plant_product_obj.get_orbit()
@@ -168,7 +165,7 @@ class PlantIsce3Runconfig(plant_isce3.PlantIsce3Script):
         freq_b_dx = None
         freq_b_dy = None
 
-        if self.workflow_name.upper() == 'GSLC':
+        if self.product_type.upper() == 'GSLC':
             freq_a_dx, freq_a_dy, freq_b_dx, freq_b_dy = \
                 self.get_pixel_spacing_gslc(
                     freq_a_dx, freq_a_dy, freq_b_dx, freq_b_dy, slc_obj)
@@ -203,8 +200,8 @@ class PlantIsce3Runconfig(plant_isce3.PlantIsce3Script):
             y0 = snap_coord(y0, self.snap_x, 0, np.ceil)
 
         if self.sas_output_file is None:
-            self.sas_output_file = (f'output_{self.workflow_name.lower()}/'
-                                    f'{self.workflow_name.lower()}.h5')
+            self.sas_output_file = (f'output_{self.product_type.lower()}/'
+                                    f'{self.product_type.lower()}.h5')
 
         print('=============================================================')
         self.print_runconfig(x0, y0, xf, yf, freq_a_dx, freq_a_dy, freq_b_dx,
@@ -223,7 +220,7 @@ class PlantIsce3Runconfig(plant_isce3.PlantIsce3Script):
 
             return
 
-        default_runconfig_basename = f'{self.workflow_name.lower()}.yaml'
+        default_runconfig_basename = f'{self.product_type.lower()}.yaml'
         if self.runconfig is None:
             self.runconfig = os.path.join(f'{helpers.WORKFLOW_SCRIPTS_DIR}',
                                           'defaults',
@@ -247,7 +244,7 @@ class PlantIsce3Runconfig(plant_isce3.PlantIsce3Script):
                 groups['dynamic_ancillary_file_group']['orbit_file'] = \
                     self.orbit_file
 
-            if self.workflow_name.upper() == 'GCOV':
+            if self.product_type.upper() == 'GCOV':
 
                 if (self.rtc_min_value_db is not None and
                         plant.isvalid(self.rtc_min_value_db)):
@@ -260,7 +257,7 @@ class PlantIsce3Runconfig(plant_isce3.PlantIsce3Script):
 
             groups['processing']['geocode']['output_epsg'] = int(self.epsg)
 
-            if (self.workflow_name.upper() == 'GCOV' and
+            if (self.product_type.upper() == 'GCOV' and
                     self.gcov_memory_mode is not None):
                 groups['processing']['geocode']['memory_mode'] = \
                     self.gcov_memory_mode
@@ -310,7 +307,7 @@ class PlantIsce3Runconfig(plant_isce3.PlantIsce3Script):
             try:
                 data = yamale.make_data(output_file, parser='ruamel')
             except yamale.YamaleError as e:
-                err_str = (f'Yamale unable to load {self.workflow_name}'
+                err_str = (f'Yamale unable to load {self.product_type}'
                            f' runconfig yaml for validation.')
                 raise yamale.YamaleError(err_str) from e
 
@@ -321,12 +318,12 @@ class PlantIsce3Runconfig(plant_isce3.PlantIsce3Script):
             print('verifying output runconfig against schema')
             with plant.PlantIndent():
                 print('[OK] runconfig is valid for the'
-                      f' {self.workflow_name.upper()} workflow!')
+                      f' {self.product_type.upper()} workflow!')
 
             try:
                 yamale.validate(schema, data)
             except yamale.YamaleError as e:
-                err_str = (f'Validation fail for {self.workflow_name}'
+                err_str = (f'Validation fail for {self.product_type}'
                            f' runconfig yaml.')
                 raise yamale.YamaleError(err_str) from e
 
@@ -449,8 +446,8 @@ class PlantIsce3Runconfig(plant_isce3.PlantIsce3Script):
     def print_runconfig(self, x0, y0, xf, yf, freq_a_dx, freq_a_dy, freq_b_dx,
                         freq_b_dy, **kwargs):
 
-        workflow_name_upper = self.workflow_name.upper()
-        workflow_name = self.workflow_name.lower()
+        workflow_name_upper = self.product_type.upper()
+        workflow_name = self.product_type.lower()
 
         print('runconfig:', **kwargs)
         print(f'    name: NISAR_L2-L-{workflow_name_upper}_RUNCONFIG',

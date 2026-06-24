@@ -17,14 +17,17 @@ from plant_isce3.readers import open_product
 PSP_NULL = 0
 
 image_thresholds_db = {
-    'HH': [plant.get_inv_db(-12),
-           plant.get_inv_db(-4.1)],
-    'HV': [plant.get_inv_db(-18),
-           plant.get_inv_db(-9.9)],
-    'VH': [plant.get_inv_db(-18),
-           plant.get_inv_db(-9.9)],
-    'VV': [plant.get_inv_db(-13.7),
-           plant.get_inv_db(-6.0)]
+    'HH': [plant.get_inv_db(-15),
+           plant.get_inv_db(-4)],
+
+    'HV': [plant.get_inv_db(-20),
+           plant.get_inv_db(-9)],
+
+    'VH': [plant.get_inv_db(-20),
+           plant.get_inv_db(9)],
+
+    'VV': [plant.get_inv_db(-16),
+           plant.get_inv_db(-5)]
 }
 
 
@@ -324,6 +327,15 @@ class PlantIsce3RslcEapAnalysis(plant_isce3.PlantIsce3Script):
 
         product_path = nisar_product_obj.ProductPath
 
+        plant_product_obj = self.load_product()
+
+        flag_has_input_data_exception = \
+            plant_product_obj.get_nisar_identification_scalar(
+                'hasInputDataException')
+
+        data_exception_str = \
+            f'data exception: {flag_has_input_data_exception}'
+
         if self.frequency is None:
             freq_pol_dict = nisar_product_obj.polarizations
         else:
@@ -526,7 +538,6 @@ class PlantIsce3RslcEapAnalysis(plant_isce3.PlantIsce3Script):
                 else:
                     pol_list = freq_pol_dict[freq]
 
-                plant_product_obj = self.load_product()
                 radar_grid = plant_product_obj.get_radar_grid(frequency=freq)
                 radar_grid_ml = plant_product_obj.get_radar_grid_ml(
                     frequency=freq)
@@ -584,198 +595,252 @@ class PlantIsce3RslcEapAnalysis(plant_isce3.PlantIsce3Script):
                         (f'{radiometric_terrain_convention.title()}'
                          ' Backscatter')
 
-                if self.flag_save_multilooked_backscatter_png:
-                    min_list = []
-                    max_list = []
-                    multilooked_backscatter_png_file = os.path.join(
-                        profiles_directory,
-                        f'{self.prefix}backscatter'
-                        f'_{freq}_original_{pol}{suffix_ml}.png')
-                    pol_file_list = []
-                    for pol in sorted(pol_list):
-                        if pol == 'VH' and 'HV' in pol_list:
-                            continue
-                        pol_file = os.path.join(
-                            images_directory,
-                            f'backscatter'
-                            f'_{freq}_original_{pol}{suffix_ml}.tif')
-                        if not os.path.isfile(pol_file):
-                            print(f'ERROR multilooked backscatter image file'
-                                  f' {pol_file} not found. Consider rerunning'
-                                  ' with the flag'
-                                  ' --save-multilooked-backscatter-image'
-                                  ' enabled.')
-                            continue
-                        if self.flag_create_plots_with_predefined_thresholds:
-                            min_list.append(image_thresholds_db[pol][0])
-                            max_list.append(image_thresholds_db[pol][1])
-                        pol_file_list.append(pol_file)
-
-                    image_kwargs = {}
-                    if len(min_list) != 0:
-                        image_kwargs['min'] = ', '.join(map(str, min_list))
-                    if len(max_list) != 0:
-                        image_kwargs['max'] = ', '.join(map(str, max_list))
-
-                    plant.display(
-                        *pol_file_list,
-                        output_file=multilooked_backscatter_png_file,
-                        force=True,
-                        title=f'Beta0 Backscatter - Freq. {freq}',
-                        fontsize=9,
-                        no_show=True,
-                        **image_kwargs)
-
-                if self.flag_save_processed_backscatter_png:
-                    min_list = []
-                    max_list = []
-                    processed_backscatter_png_file = os.path.join(
-                        profiles_directory,
-                        f'{self.prefix}backscatter'
-                        f'_{freq}_processed_{pol}{suffix_ml}.png')
-                    pol_file_list = []
-                    for pol in sorted(pol_list):
-                        if pol == 'VH' and 'HV' in pol_list:
-                            continue
-                        pol_file = os.path.join(
-                            images_directory,
-                            f'backscatter_{freq}_processed_{pol}{suffix_ml}'
-                            '.tif')
-                        if not os.path.isfile(pol_file):
-                            print(f'ERROR processed backscatter image file'
-                                  f' {pol_file} not found. Consider rerunning'
-                                  ' with the flag'
-                                  ' --save-processed-backscatter-image'
-                                  ' enabled.')
-                            continue
-                        if self.flag_create_plots_with_predefined_thresholds:
-                            min_list.append(image_thresholds_db[pol][0])
-                            max_list.append(image_thresholds_db[pol][1])
-                        pol_file_list.append(pol_file)
-                    image_kwargs = {}
-                    if len(min_list) != 0:
-                        image_kwargs['min'] = ', '.join(map(str, min_list))
-                    if len(max_list) != 0:
-                        image_kwargs['max'] = ', '.join(map(str, max_list))
-
-                    plant.display(
-                        *pol_file_list,
-                        output_file=processed_backscatter_png_file,
-                        force=True,
-                        title=f'{backscatter_str} - Freq. {freq}',
-                        fontsize=9,
-                        no_show=True,
-                        **image_kwargs)
-
-                if self.flag_generate_elevation_profiles:
-
-                    print('saving elevation profiles plot for frequency', freq)
-
-                    display_args = [
-                        np.array(display_elevation_profiles_dict['elevation'])]
-                    name_list = ['Elevation [m]']
-
-                    for pol in sorted(pol_list):
-                        display_args.append(
-                            display_elevation_profiles_dict[pol])
-
-                        name_list.append(pol)
-
-                    plot_file = os.path.join(
-                        profiles_directory,
-
-                        f'{self.prefix}elevation_profile'
-                        f'_{freq}{suffix_ml}.png')
-
-                    plot_title = (f'{backscatter_str} Elevation Profiles'
-                                  f' - Freq. {freq}')
-
-                    if self.profile_max_in_db is not None:
-                        vmax = self.profile_max_in_db
-                    else:
-                        vmax = 2.5
-
-                    if self.profile_min_in_db is not None:
-                        vmin = self.profile_min_in_db
-                    else:
-                        vmin = -2.5
-
-                    plant.display(*display_args,
-                                  output_file=plot_file,
-                                  force=True,
-                                  marker='',
-                                  name=','.join(name_list),
-                                  title=plot_title,
-                                  fontsize=9,
-                                  legend_fontsize=12,
-                                  linewidth=2,
-
-                                  xlabel='Elevation [deg]',
-                                  ylabel=backscatter_str + ' [dB]',
-                                  hline="-0.25,0.25",
-                                  stats_linestyle='dashed',
-                                  stats_linewidth=1,
-                                  stats_linecolor='red',
-                                  ymax=vmax,
-                                  ymin=vmin,
-                                  first_input_as_x=True,
-                                  no_show=True)
-
-                if self.flag_save_plot:
-
-                    print('saving profiles plot for frequency', freq)
-
-                    display_args = [
-                        np.array(display_profiles_dict['slant_ranges']) / 1000]
-                    name_list = ['Slant range [km]']
-
-                    for pol in sorted(pol_list):
-                        display_args.append(display_profiles_dict[pol])
-
-                        name_list.append(pol)
-
-                    if self.profile_max_in_db is not None:
-                        vmax = self.profile_max_in_db
-                    else:
-                        vmax = 2.5
-
-                    if self.profile_min_in_db is not None:
-                        vmin = self.profile_min_in_db
-                    else:
-                        vmin = -2.5
-
-                    plot_file = os.path.join(
-                        profiles_directory,
-                        f'{self.prefix}slantrange_profile_{freq}{suffix_ml}'
-                        '.png')
-
-                    plot_title = (f'{backscatter_str} Range Profiles -'
-                                  f' Freq. {freq}')
-
-                    plant.display(*display_args,
-                                  output_file=plot_file,
-                                  force=True,
-                                  name=','.join(name_list),
-                                  title=plot_title,
-                                  marker='',
-                                  fontsize=9,
-                                  legend_fontsize=12,
-                                  linewidth=2,
-
-                                  xlabel='Slant range [km]',
-                                  hline="-0.25,0.25",
-                                  stats_linestyle='dashed',
-                                  stats_linewidth=1,
-                                  stats_linecolor='red',
-                                  ylabel=backscatter_str + ' [dB]',
-                                  ymax=vmax,
-                                  ymin=vmin,
-                                  first_input_as_x=True,
-                                  no_show=True)
+                self.plot_results(
+                    data_exception_str, freq, suffix_ml, profiles_directory,
+                    images_directory, pol_list, display_profiles_dict,
+                    display_elevation_profiles_dict, backscatter_str)
 
         if self.output_file:
             print(f'# file saved: {self.output_file}')
             plant.append_output_file(self.output_file)
+
+    def plot_results(self, data_exception_str, freq, suffix_ml,
+                     profiles_directory, images_directory, pol_list,
+                     display_profiles_dict, display_elevation_profiles_dict,
+                     backscatter_str):
+
+        if self.flag_save_multilooked_backscatter_png:
+            min_list = []
+            max_list = []
+            multilooked_backscatter_png_file = os.path.join(
+                profiles_directory,
+                f'{self.prefix}backscatter'
+                f'_{freq}_original{suffix_ml}.png')
+            pol_file_list = []
+            for pol in sorted(pol_list):
+                if pol == 'VH' and 'HV' in pol_list:
+                    continue
+                pol_file = os.path.join(
+                    images_directory,
+                    f'backscatter'
+                    f'_{freq}_original_{pol}{suffix_ml}.tif')
+                if not os.path.isfile(pol_file):
+                    print(f'ERROR multilooked backscatter image file'
+                          f' {pol_file} not found. Consider rerunning'
+                          ' with the flag'
+                          ' --save-multilooked-backscatter-image'
+                          ' enabled.')
+                    continue
+                if self.flag_create_plots_with_predefined_thresholds:
+                    min_list.append(image_thresholds_db[pol][0])
+                    max_list.append(image_thresholds_db[pol][1])
+                pol_file_list.append(pol_file)
+
+            image_kwargs = {}
+            if len(min_list) != 0:
+                image_kwargs['min'] = ', '.join(map(str, min_list))
+            if len(max_list) != 0:
+                image_kwargs['max'] = ', '.join(map(str, max_list))
+
+            title = f'Beta0 Backscatter - Freq. {freq} ({data_exception_str})'
+
+            plant.display(
+                *pol_file_list,
+                output_file=multilooked_backscatter_png_file,
+                force=True,
+                title=title,
+                fontsize=9,
+                no_show=True,
+                crop_plots=True,
+                **image_kwargs)
+
+        if self.flag_save_processed_backscatter_png:
+            min_list = []
+            max_list = []
+            min_db_list = []
+            max_db_list = []
+            processed_backscatter_png_file = os.path.join(
+                profiles_directory,
+                f'{self.prefix}backscatter'
+                f'_{freq}_processed{suffix_ml}.png')
+            processed_backscatter_hist_png_file = os.path.join(
+                profiles_directory,
+                f'{self.prefix}backscatter'
+                f'_{freq}_processed{suffix_ml}_hist.png')
+            pol_file_list = []
+            pol_list_sorted = sorted(pol_list)
+            for pol in pol_list_sorted:
+                if pol == 'VH' and 'HV' in pol_list:
+                    continue
+                pol_file = os.path.join(
+                    images_directory,
+                    f'backscatter_{freq}_processed_{pol}{suffix_ml}'
+                    '.tif')
+                if not os.path.isfile(pol_file):
+                    print(f'ERROR processed backscatter image file'
+                          f' {pol_file} not found. Consider rerunning'
+                          ' with the flag'
+                          ' --save-processed-backscatter-image'
+                          ' enabled.')
+                    continue
+                if self.flag_create_plots_with_predefined_thresholds:
+                    min_list.append(image_thresholds_db[pol][0])
+                    max_list.append(image_thresholds_db[pol][1])
+
+                    min_db_list.append(
+                        plant.get_db(
+                            image_thresholds_db[pol][0]))
+                    max_db_list.append(
+                        plant.get_db(
+                            image_thresholds_db[pol][1]))
+                pol_file_list.append(pol_file)
+
+            image_kwargs = {}
+            if len(min_list) != 0:
+                image_kwargs['min'] = ', '.join(map(str, min_list))
+            if len(max_list) != 0:
+                image_kwargs['max'] = ', '.join(map(str, max_list))
+
+            title = f'{backscatter_str} - Freq. {freq} ({data_exception_str})'
+            plant.display(
+                *pol_file_list,
+                output_file=processed_backscatter_png_file,
+                force=True,
+                title=title,
+                fontsize=9,
+                no_show=True,
+                crop_plots=True,
+                **image_kwargs)
+
+            title = f'{backscatter_str} - Freq. {freq} ({data_exception_str})'
+            plant.display(
+                *pol_file_list,
+                output_file=processed_backscatter_hist_png_file,
+                hist=True,
+                db=True,
+                force=True,
+                name=','.join(pol_list_sorted),
+
+                title=title,
+                fontsize=9,
+                legend_fontsize=12,
+                crop_plots=True,
+                no_show=True)
+
+        if self.flag_generate_elevation_profiles:
+            print('saving elevation profiles plot for frequency', freq)
+
+            display_args = [
+                np.array(display_elevation_profiles_dict['elevation'])]
+            name_list = ['Elevation [m]']
+
+            for pol in sorted(pol_list):
+                display_args.append(
+                    display_elevation_profiles_dict[pol])
+
+                offset = display_elevation_profiles_dict[pol + '_offset']
+
+                name_list.append(pol)
+
+            plot_file = os.path.join(
+                profiles_directory,
+
+                f'{self.prefix}elevation_profile'
+                f'_{freq}{suffix_ml}.png')
+
+            title = (f'{backscatter_str} Elevation Profiles'
+                     f' - Freq. {freq} ({data_exception_str})')
+
+            if self.profile_max_in_db is not None:
+                vmax = self.profile_max_in_db
+            else:
+                vmax = 2.5
+
+            if self.profile_min_in_db is not None:
+                vmin = self.profile_min_in_db
+            else:
+                vmin = -2.5
+
+            plant.display(*display_args,
+                          output_file=plot_file,
+                          force=True,
+                          marker='',
+                          name=','.join(name_list),
+                          title=title,
+                          fontsize=9,
+                          legend_fontsize=12,
+                          linewidth=2,
+
+                          xlabel='Elevation [deg]',
+                          ylabel=backscatter_str + ' [dB]',
+
+                          hline="-0.25,0.25",
+                          stats_linestyle='dashed',
+                          stats_linewidth=1,
+                          stats_linecolor='red',
+                          ymax=vmax,
+                          ymin=vmin,
+                          first_input_as_x=True,
+                          crop_plots=True,
+                          no_show=True)
+
+        if self.flag_save_plot:
+            print('saving profiles plot for frequency', freq)
+
+            display_args = [
+                np.array(display_profiles_dict['slant_ranges']) / 1000]
+            error_fill_args = []
+            name_list = ['Slant range [km]']
+
+            for pol in sorted(pol_list):
+                display_args.append(display_profiles_dict[pol])
+
+                offset = display_profiles_dict[pol + '_offset']
+                name_list.append(f"{pol} (median: {offset:.2f} dB)")
+                error_fill_args.append(display_profiles_dict[pol + '_stddev'])
+
+            if self.profile_max_in_db is not None:
+                vmax = self.profile_max_in_db
+            else:
+                vmax = 2.5
+
+            if self.profile_min_in_db is not None:
+                vmin = self.profile_min_in_db
+            else:
+                vmin = -2.5
+
+            plot_file = os.path.join(
+                profiles_directory,
+                f'{self.prefix}slantrange_profile_{freq}{suffix_ml}'
+                '.png')
+
+            title = (f'{backscatter_str} Range Profiles -'
+                     f' Freq. {freq} ({data_exception_str})')
+
+            error_fill_image = plant.util(*error_fill_args)
+
+            plant.display(*display_args,
+                          output_file=plot_file,
+                          force=True,
+                          name=','.join(name_list),
+                          title=title,
+                          marker='',
+                          fontsize=9,
+                          legend_fontsize=12,
+                          linewidth=2,
+                          error_fill=error_fill_image,
+
+                          xlabel='Slant range [km]',
+                          hline="-0.25,0.25",
+                          stats_linestyle='dashed',
+                          stats_linewidth=1,
+                          stats_linecolor='red',
+                          ylabel=backscatter_str + ' [dB]',
+                          ymax=vmax,
+                          ymin=vmin,
+                          first_input_as_x=True,
+                          crop_plots=True,
+                          no_show=True)
 
     def flat_pol(self, profiles_directory, images_directory,
                  nisar_product_obj,
@@ -890,7 +955,6 @@ class PlantIsce3RslcEapAnalysis(plant_isce3.PlantIsce3Script):
                 backscatter_image[mask_non_forest] = np.nan
 
             if abs_cal_factor is not None:
-
                 print('applying absolute radiometric calibration '
                       f' factor {abs_cal_factor[pol_count]} to pol'
                       f' {pol}')
@@ -916,22 +980,19 @@ class PlantIsce3RslcEapAnalysis(plant_isce3.PlantIsce3Script):
             slant_ranges_ml = slant_ranges_ml[:backscatter_image.shape[1]]
 
         if not self.flag_read_existing_profiles:
-
-            profile_x_min, divisor = \
-                self.get_correction_profiles(profiles_directory,
-                                             nisar_product_obj,
-                                             freq, abs_cal_factor,
-                                             pol_count, pol,
-                                             backscatter_image,
-
-                                             radar_grid_ml,
-
-                                             profile_filter_size,
-                                             metadata_dict,
-                                             display_profiles_dict)
+            self.get_correction_profiles(profiles_directory,
+                                         nisar_product_obj,
+                                         freq, abs_cal_factor,
+                                         pol_count, pol,
+                                         backscatter_image,
+                                         radar_grid_ml,
+                                         profile_filter_size,
+                                         metadata_dict,
+                                         display_profiles_dict)
 
             if self.flag_generate_elevation_profiles:
-                elevation_profile, backscatter_elevation_profile = \
+                elevation_profile, backscatter_elevation_profile, \
+                    backscatter_elevation_profile_offset = \
                     self.generate_elevation_profiles(
                         profiles_directory,
                         nisar_product_obj, freq,
@@ -950,6 +1011,9 @@ class PlantIsce3RslcEapAnalysis(plant_isce3.PlantIsce3Script):
                 display_elevation_profiles_dict[pol] = \
                     plant.get_db(backscatter_elevation_profile)
 
+                display_elevation_profiles_dict[pol + '_offset'] = \
+                    plant.get_db(backscatter_elevation_profile_offset)
+
     def flatten_and_save_h5_pol(self, profiles_directory, images_directory,
                                 product_path, rslc_obj, freq,
 
@@ -957,7 +1021,7 @@ class PlantIsce3RslcEapAnalysis(plant_isce3.PlantIsce3Script):
 
         slant_ranges = np.array(radar_grid.slant_ranges)
 
-        profile_x_min, divisor = self.read_existing_profiles(
+        profile_x_min, divisor, profile_x_stddev = self.read_existing_profiles(
             profiles_directory, freq, pol, slant_ranges)
 
         pol_path = f'{product_path}/swaths/frequency{freq}/{pol}'
@@ -1057,6 +1121,8 @@ class PlantIsce3RslcEapAnalysis(plant_isce3.PlantIsce3Script):
         profile_x_max = np.nanpercentile(
             backscatter_image, self.percentile, axis=0)
 
+        profile_x_stddev = np.nanstd(plant.get_db(backscatter_image), axis=0)
+
         if self.flag_ignore_noise:
             print('*** ignoring noise in profile calculation')
             profile_x_min = 0 * profile_x_max
@@ -1114,6 +1180,9 @@ class PlantIsce3RslcEapAnalysis(plant_isce3.PlantIsce3Script):
             profile_x_max = plant.filter_data(
                 profile_x_max,
                 mean=[1, profile_filter_size])
+            profile_x_stddev = plant.filter_data(
+                profile_x_stddev,
+                mean=[1, profile_filter_size])
 
         print('*** profile_x_min.shape:', profile_x_min.shape)
         print('*** profile_x_max.shape:', profile_x_max.shape)
@@ -1128,6 +1197,10 @@ class PlantIsce3RslcEapAnalysis(plant_isce3.PlantIsce3Script):
         output_profile_x_min = os.path.join(profiles_directory,
                                             'slant_range',
                                             f'profile_x_min_{freq}_{pol}.tif')
+        output_profile_x_stddev = os.path.join(
+            profiles_directory,
+            'slant_range',
+            f'profile_x_stddev_{freq}_{pol}.tif')
         output_divisor = os.path.join(profiles_directory,
                                       'slant_range',
                                       f'divisor_{freq}_{pol}.tif')
@@ -1137,6 +1210,10 @@ class PlantIsce3RslcEapAnalysis(plant_isce3.PlantIsce3Script):
                          force=True)
         plant.save_image(profile_x_min,
                          output_file=output_profile_x_min,
+                         metadata=metadata_dict,
+                         force=True)
+        plant.save_image(profile_x_stddev,
+                         output_file=output_profile_x_stddev,
                          metadata=metadata_dict,
                          force=True)
 
@@ -1165,7 +1242,11 @@ class PlantIsce3RslcEapAnalysis(plant_isce3.PlantIsce3Script):
 
         display_profiles_dict[pol] = plant.get_db(divisor)
 
-        return profile_x_min, divisor
+        display_profiles_dict[pol + '_stddev'] = profile_x_stddev
+
+        display_profiles_dict[pol + '_offset'] = plant.get_db(percentile_mean)
+
+        return profile_x_min, divisor, profile_x_stddev
 
     def read_existing_profiles(self, profiles_directory, freq, pol,
                                slant_ranges):
@@ -1180,8 +1261,14 @@ class PlantIsce3RslcEapAnalysis(plant_isce3.PlantIsce3Script):
         slant_range_file = os.path.join(profiles_directory,
                                         'slant_range',
                                         f'slant_range_{freq}.tif')
+        profile_x_stddev_file = os.path.join(
+            profiles_directory,
+            'slant_range',
+            f'profile_x_stddev_{freq}_{pol}.tif')
 
         profile_x_min_orig = plant.read_image(profile_x_min_file).image[0, :]
+        profile_x_stddev_orig = plant.read_image(
+            profile_x_stddev_file).image[0, :]
         divisor_orig = plant.read_image(divisor_file).image[0, :]
         slant_range_orig = plant.read_image(slant_range_file).image[0, :]
 
@@ -1191,7 +1278,7 @@ class PlantIsce3RslcEapAnalysis(plant_isce3.PlantIsce3Script):
                 np.logical_not(np.isfinite(profile_x_min_orig))] = 0
 
         if np.array_equal(slant_ranges, slant_range_orig):
-            return profile_x_min_orig, divisor_orig
+            return profile_x_min_orig, divisor_orig, profile_x_stddev_orig
 
         print('slant range from product and profile file do not match.')
         print('interpolating divisor and profile_x_min to match slant'
@@ -1208,6 +1295,7 @@ class PlantIsce3RslcEapAnalysis(plant_isce3.PlantIsce3Script):
                                    plant.isvalid(divisor_orig))
 
         profile_x_min_orig = profile_x_min_orig[valid_ind]
+        profile_x_stddev_orig = profile_x_stddev_orig[valid_ind]
         divisor_orig = divisor_orig[valid_ind]
         slant_range_orig = slant_range_orig[valid_ind]
 
@@ -1223,24 +1311,15 @@ class PlantIsce3RslcEapAnalysis(plant_isce3.PlantIsce3Script):
         profile_x_min = f(slant_ranges)
         profile_x_min[profile_x_min <= 0] = 0
 
-        divisor_mean = np.nanmean(divisor)
-        print('*** divisor_mean:', divisor_mean)
-        if not np.isfinite(divisor_mean):
-            print('profile_x_min:', profile_x_min)
-            print('mean(profile_x_min):', np.nanmean(profile_x_min))
-            print('divisor_orig:', divisor_orig)
-            print('mean(divisor_orig):', np.nanmean(divisor_orig))
-            print('divisor:', divisor)
-            print('mean(divisor):', np.nanmean(divisor))
-            print('slant_ranges:', slant_ranges)
-            print('mean(slant_ranges):', np.nanmean(slant_ranges))
-            print('slant_range_orig:', slant_range_orig)
-            print('mean(slant_range_orig):', np.nanmean(slant_range_orig))
-            print('ERROR divisor does not have valid values')
-        print('*** divisor.shape after:', divisor.shape)
-        print('*** profile_x_min.shape after:', profile_x_min.shape)
+        f = interp1d(slant_range_orig, profile_x_stddev_orig,
+                     kind='cubic',
+                     fill_value='extrapolate')
 
-        return profile_x_min, divisor
+        profile_x_stddev = f(slant_ranges)
+
+        divisor_mean = np.nanmean(divisor)
+
+        return profile_x_min, divisor, profile_x_stddev
 
 
 def main(argv=None):
