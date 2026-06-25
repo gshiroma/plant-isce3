@@ -11,5 +11,6 @@ numpy>=1.25.2
 plant>=0.8.3
 pyre>=1.12.5
 ruamel_yaml>=0.15
+scikit-image
 scipy
 shapely
